@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Titanic: The Walls</title>
+<style>
+@font-face { font-family: FR; src: url(fonts/fraunces-latin-600-normal.woff2) format('woff2'); font-weight: 600; }
+@font-face { font-family: FR; src: url(fonts/fraunces-latin-700-normal.woff2) format('woff2'); font-weight: 700; }
+@font-face { font-family: FR; src: url(fonts/fraunces-latin-900-normal.woff2) format('woff2'); font-weight: 900; }
+@font-face { font-family: FR; src: url(fonts/fraunces-latin-600-italic.woff2) format('woff2'); font-weight: 600; font-style: italic; }
+@font-face { font-family: JB; src: url(fonts/jetbrains-mono-latin-400-normal.woff2) format('woff2'); font-weight: 400; }
+@font-face { font-family: JB; src: url(fonts/jetbrains-mono-latin-700-normal.woff2) format('woff2'); font-weight: 700; }
+@font-face { font-family: JB; src: url(fonts/jetbrains-mono-latin-800-normal.woff2) format('woff2'); font-weight: 800; }
+:root {
+  --night: #0A111B; --night2: #0F1A28; --line: #D9D2C3; --dim: #6C7A8A; --steel: #24344A;
+  --accent: #E9A23B; --water: #3D7FB8; --paper: #EFE8D8; --ink: #17140F;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { background: #000; overflow: hidden; }
+#stage { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; overflow: hidden; background: var(--night); color: var(--line); font-family: FR, serif; transform-origin: 0 0; }
+.L { position: absolute; left: 0; top: 0; }
+.full { position: absolute; inset: 0; }
+.mono { font-family: JB, monospace; }
+.kick { font: 800 26px/1 JB; letter-spacing: .2em; color: var(--accent); white-space: nowrap; }
+.mask { overflow: hidden; display: block; }
+.mask > span { display: block; }
+.hd { font: 700 78px/1.02 FR; letter-spacing: -0.02em; white-space: nowrap; }
+.lbl { position: absolute; left: 0; top: 0; white-space: nowrap; }
+.lbl .k { font: 800 26px/1 JB; letter-spacing: .16em; color: var(--accent); }
+.lbl .n { font: 700 56px/1.05 FR; letter-spacing: -0.01em; color: var(--line); margin-top: 8px; }
+.lbl .s { font: 700 24px/1.2 JB; letter-spacing: .08em; color: var(--line); }
+.tag { font: 800 22px/1 JB; letter-spacing: .14em; color: var(--night); background: var(--accent); padding: 10px 14px; border-radius: 4px; white-space: nowrap; }
+.paper { background: var(--paper); color: var(--ink); border-radius: 6px; box-shadow: 0 30px 60px rgba(0,0,0,.45); }
+.grain { position: absolute; left: -60px; top: -60px; width: 2040px; height: 1200px; pointer-events: none; mix-blend-mode: overlay; opacity: .16; z-index: 95; }
+.vig { position: absolute; inset: 0; pointer-events: none; z-index: 94; background: radial-gradient(120% 90% at 50% 50%, transparent 55%, rgba(0,0,0,.55) 100%); }
+</style>
+</head>
+<body>
+<div id="stage"><div id="shake" class="full">
+  <svg id="sky" class="full" viewBox="0 0 1920 1080"></svg>
+  <svg id="world" class="full" viewBox="0 0 1920 1080"></svg>
+  <div id="scenes" class="full"></div>
+  <svg id="ov" class="full" viewBox="0 0 1920 1080" style="overflow:visible"></svg>
+  <div id="labels" class="full"></div>
+  <div class="vig"></div>
+  <svg class="grain" id="grain" viewBox="0 0 2040 1200"><filter id="gn"><feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="2" seed="5" stitchTiles="stitch"/><feColorMatrix values="0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0 0 0 1.2 -.1"/></filter><rect width="2040" height="1200" filter="url(#gn)"/></svg>
+</div></div>
+<script src="film.js"></script>
+</body>
+</html>

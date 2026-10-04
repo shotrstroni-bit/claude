@@ -1,0 +1,21 @@
+{
+  "_": "Narration, one sentence per line, verbatim from the supplied YouTube script. vo-analyze.mjs aligns the read to these lines.",
+  "lines": [
+    { "id": "open",     "text": "At twenty to midnight on April 14th, 1912, leading stoker Frederick Barrett was in the Titanic's forward boiler room when water started pouring in through the ship's side." },
+    { "id": "twofeet",  "text": "It came in about two feet above the floor he was standing on." },
+    { "id": "door",     "text": "He ran aft into the next boiler room, and the watertight door came down behind him." },
+    { "id": "bridge",   "text": "Up on the bridge, First Officer William Murdoch had already pulled the lever that shut those doors." },
+    { "id": "worked",   "text": "The system did what it was built to do." },
+    { "id": "gone",     "text": "Two hours and forty minutes later, the ship was gone." },
+    { "id": "usual",    "text": "The usual explanation is that the walls between her compartments didn't go high enough." },
+    { "id": "inquiry",  "text": "Less than two months later, the Harland and Wolff naval architect who presented the ship's flooding calculations was asked about exactly that, under oath." },
+    { "id": "no",       "text": "He said no." },
+    { "id": "weakness", "text": "The weakness was somewhere else in the design, and a ship launched half a century earlier had already shown what was missing." },
+    { "id": "fifteen",  "text": "Harland and Wolff divided the Titanic's hull with fifteen steel bulkheads, walls running across the ship from side to side, which made sixteen watertight compartments." },
+    { "id": "lever",    "text": "The doors through those walls in the boiler and engine rooms could all be closed from the bridge with that one lever." },
+    { "id": "two",      "text": "The shipyard's calculations had her floating with any two neighboring compartments flooded." },
+    { "id": "four",     "text": "At the bow she could take more: the first four could fill and she would still float." },
+    { "id": "board",    "text": "Back in 1891, a Board of Trade committee had recommended two, and even that wasn't compulsory." },
+    { "id": "wilding",  "text": "At the British inquiry, Harland and Wolff's Edward Wilding testified that the Titanic's safety margin above the water was about twice what that committee had suggested." }
+  ]
+}
