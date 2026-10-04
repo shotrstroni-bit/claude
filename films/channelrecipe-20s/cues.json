@@ -1,0 +1,28 @@
+{
+ "_": "Derived by build.mjs from vo.json. Seconds on the composed 120 BPM grid; the film snaps them to measured beats.json.",
+ "vo": "scratch",
+ "hook": [
+  0.25,
+  1,
+  1.75
+ ],
+ "pick": 2,
+ "picked": 3.5,
+ "cook": 4,
+ "verbs": [
+  5,
+  5.25,
+  6.5
+ ],
+ "done": 7.5,
+ "ding": 9,
+ "earn": 10,
+ "first": 11.5,
+ "subs": 12.5,
+ "smash": 12.75,
+ "topple": 13.75,
+ "cta": 15,
+ "trial": 16.5,
+ "today": 17.5,
+ "end": 20
+}

@@ -1,0 +1,12 @@
+{
+  "_": "VO lines with target start times (s). The real read is segmented and matched to these lines by vo/analyze.mjs.",
+  "lines": [
+    { "id": "hook",   "t": 0.15,  "text": "No camera. No editing. No face." },
+    { "id": "pick",   "t": 2.4,   "text": "Just pick a proven recipe." },
+    { "id": "cook",   "t": 4.2,   "text": "AI writes the script, voices it, and edits the video." },
+    { "id": "done",   "t": 7.8,   "text": "Finished in about fifteen minutes." },
+    { "id": "earn",   "t": 10.0,  "text": "And you earn from your very first upload." },
+    { "id": "subs",   "t": 12.8,  "text": "No waiting for a thousand subs." },
+    { "id": "cta",    "t": 15.2,  "text": "ChannelRecipe. Start your free trial today." }
+  ]
+}

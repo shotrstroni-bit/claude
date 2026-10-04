@@ -12,14 +12,17 @@ const args = process.argv.slice(2);
 const filmDir = resolve(args.find((a) => !a.startsWith('--') && !/^[\d.,]+$/.test(a)) || 'films/channelrecipe');
 const SHEET = args.includes('--sheet');
 const AT = args.includes('--at') ? args[args.indexOf('--at') + 1].split(',').map(Number) : null;
-const W = 1080, H = 1920, FPS = 30, DUR = 15;
+const meta = existsSync(join(filmDir, 'film.json')) ? JSON.parse(readFileSync(join(filmDir, 'film.json'), 'utf8')) : {};
+const W = meta.width || 1080, H = meta.height || 1920, FPS = meta.fps || 30, DUR = meta.duration || 15;
 const out = join(filmDir, 'out');
 mkdirSync(out, { recursive: true });
 
 const run = (cmd, a, opts = {}) => execFileSync(cmd, a, { stdio: ['ignore', 'pipe', 'pipe'], ...opts }).toString();
 
-// 1) score + measured beat grid
-if (existsSync(join(filmDir, 'score.mjs'))) {
+// 1) audio build (VO + score) or score-only, then the measured beat grid
+if (existsSync(join(filmDir, 'build.mjs'))) {
+  console.log(run('node', [join(filmDir, 'build.mjs')]).trim());
+} else if (existsSync(join(filmDir, 'score.mjs'))) {
   console.log(run('node', [join(filmDir, 'score.mjs')]).trim());
   console.log(run('node', ['lib/measure-beats.mjs', join(out, 'score.wav'), join(filmDir, 'beats.json')]).trim());
 }
@@ -58,13 +61,14 @@ try {
     console.log(join(out, 'sheet.png'), `(${times.length} beats; tile n = beat index)`);
   } else {
     // 3) master the score to -14 LUFS (two-pass loudnorm, linear)
-    const wav = join(out, 'score.wav'), master = join(out, 'score-master.wav');
+    const wav = existsSync(join(out, 'audio.wav')) ? join(out, 'audio.wav') : join(out, 'score.wav'), master = join(out, 'master.wav');
     const j = JSON.parse(execFileSync('sh', ['-c', `ffmpeg -hide_banner -i "${wav}" -af loudnorm=I=-14:TP=-1:LRA=11:print_format=json -f null - 2>&1 | sed -n '/^{/,/^}/p'`]).toString());
     run('ffmpeg', ['-y', '-v', 'error', '-i', wav, '-af',
       `loudnorm=I=-14:TP=-1:LRA=11:measured_I=${j.input_i}:measured_TP=${j.input_tp}:measured_LRA=${j.input_lra}:measured_thresh=${j.input_thresh}:offset=${j.target_offset}:linear=true,aresample=48000`,
       '-ar', '48000', master]);
     // 4) frames -> H.264
-    const mp4 = join(out, `${filmDir.split('/').pop()}-15s.mp4`);
+    const name = filmDir.split('/').pop();
+    const mp4 = join(out, name.endsWith(`-${DUR}s`) ? `${name}.mp4` : `${name}-${DUR}s.mp4`);
     const ff = spawn('ffmpeg', ['-y', '-v', 'error', '-f', 'image2pipe', '-framerate', String(FPS), '-i', '-', '-i', master,
       '-c:v', 'libx264', '-preset', 'slow', '-crf', '16', '-pix_fmt', 'yuv420p', '-profile:v', 'high', '-movflags', '+faststart',
       '-c:a', 'aac', '-b:a', '256k', '-shortest', mp4], { stdio: ['pipe', 'inherit', 'inherit'] });
