@@ -1,0 +1,16 @@
+{
+  "_": "Cue points in BEAT INDICES (0-based). The score places hits on them at the composed tempo; the film resolves them through the measured beats.json.",
+  "hook": [0, 1, 2],
+  "strike": 3,
+  "deal": [4, 5, 6, 7],
+  "select": 8,
+  "ingredients": [9, 10, 11, 12, 13],
+  "button": 14,
+  "click": 16,
+  "oven": 17,
+  "ding": 22,
+  "money": [23, 24, 25],
+  "swell": 26,
+  "end": 27,
+  "cta": 29
+}
