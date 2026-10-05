@@ -44,7 +44,7 @@ def box(name, size, loc, mat):
     obj = bpy.context.active_object
     obj.name = name
     obj.scale = size
-    bpy.ops.object.transform_apply(scale=True)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
     obj.data.materials.append(mat)
     return obj
 
@@ -130,9 +130,9 @@ sun = bpy.context.active_object
 sun.data.energy = 4
 sun.rotation_euler = (math.radians(50), 0, math.radians(35))
 
-bpy.ops.object.camera_add(location=(13, -15, 7))
+bpy.ops.object.camera_add(location=(16, -19, 9))
 cam = bpy.context.active_object
-cam.rotation_euler = (math.radians(72), 0, math.radians(41))
+cam.rotation_euler = (math.radians(72), 0, math.radians(40))
 bpy.context.scene.camera = cam
 
 world = bpy.context.scene.world or bpy.data.worlds.new("World")
@@ -140,5 +140,9 @@ bpy.context.scene.world = world
 world.use_nodes = True
 world.node_tree.nodes["Background"].inputs["Color"].default_value = (0.62, 0.80, 0.95, 1)
 
-bpy.context.scene.render.engine = "BLENDER_EEVEE_NEXT" if bpy.app.version >= (4, 2) else "BLENDER_EEVEE"
+# EEVEE's internal name changed between versions (EEVEE_NEXT in 4.2-4.x, EEVEE in 5.x)
+engines = bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items.keys()
+bpy.context.scene.render.engine = "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in engines else "BLENDER_EEVEE"
+# "Standard" keeps toon colors flat and true instead of the washed-out default (AgX)
+bpy.context.scene.view_settings.view_transform = "Standard"
 print("Test house built.")
