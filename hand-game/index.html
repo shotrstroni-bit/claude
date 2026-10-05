@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Handspace</title>
+  <meta name="description" content="Webcam hand tracking that drives a true-scale 3D hand. Pop orbs and throw balls with your real hands.">
+  <meta name="theme-color" content="#0c1317">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/",
+        "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/vision_bundle.mjs"
+      }
+    }
+  </script>
+  <script type="module" src="src/main.js"></script>
+</head>
+<body>
+  <div id="app" data-backdrop="studio" data-mode="pop" data-live="false">
+    <video id="cam" playsinline muted></video>
+    <canvas id="scene" aria-label="3D view of your tracked hands"></canvas>
+
+    <header class="hud-top">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Handspace</div>
+      <div class="score" id="scoreBox" hidden>
+        <span class="score-value" id="score">0</span>
+        <span class="score-mult" id="mult" hidden>×2</span>
+      </div>
+      <div class="hud-right">
+        <span class="timer" id="timer" hidden>1:00</span>
+        <div class="seg seg-hud" role="group" aria-label="Game mode" data-live-only>
+          <button type="button" data-set-mode="pop">Orb Pop</button>
+          <button type="button" data-set-mode="sandbox">Sandbox</button>
+        </div>
+        <button type="button" class="icon-btn" id="settingsBtn" aria-label="Settings" aria-controls="settings" aria-expanded="false">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="center-msg" id="centerMsg" aria-live="assertive" hidden></div>
+    <p class="hint" id="hint" role="status" aria-live="polite" hidden></p>
+
+    <footer class="hud-bottom" data-live-only>
+      <figure class="pip" id="pipWrap">
+        <canvas id="pip" width="240" height="135"></canvas>
+        <figcaption>Camera</figcaption>
+      </figure>
+      <dl class="readouts">
+        <div><dt>Hand length</dt><dd id="roLen">–</dd></div>
+        <div><dt>From camera</dt><dd id="roDist">–</dd></div>
+        <div><dt>Tracking</dt><dd id="roFps">–</dd></div>
+      </dl>
+    </footer>
+
+    <section class="sheet intro" id="intro" aria-labelledby="introTitle">
+      <p class="eyebrow">Webcam hand tracking · 21 joints · true scale</p>
+      <h1 id="introTitle">Handspace</h1>
+      <p class="lede">Your camera tracks both hands and drives a 3D hand at your real size and distance. Move a finger and it moves with you.</p>
+      <ol class="steps">
+        <li><span><b>Allow the camera.</b> Video never leaves this device; tracking runs in your browser.</span></li>
+        <li><span><b>Hold your hands 30–60&nbsp;cm from the camera</b>, with light in front of you rather than behind.</span></li>
+        <li><span><b>Touch the orbs.</b> Gold ones need a pinch: thumb and index together.</span></li>
+      </ol>
+      <div class="actions">
+        <button type="button" class="btn primary" data-start="pop">Play Orb Pop</button>
+        <button type="button" class="btn" data-start="sandbox">Open Sandbox</button>
+      </div>
+      <p class="status" id="introStatus" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="sheet results" id="results" aria-labelledby="resultsTitle" hidden>
+      <p class="eyebrow" id="resultsTitle">Round over</p>
+      <p class="final"><span id="finalScore">0</span> <small>points</small></p>
+      <p class="new-best" id="newBest" hidden>New personal best</p>
+      <dl class="stats">
+        <div><dt>Orbs</dt><dd id="stPops">0</dd></div>
+        <div><dt>Gold</dt><dd id="stGold">0</dd></div>
+        <div><dt>Best streak</dt><dd id="stCombo">0</dd></div>
+        <div><dt>Best score</dt><dd id="stBest">0</dd></div>
+      </dl>
+      <div class="actions">
+        <button type="button" class="btn primary" id="againBtn">Play again</button>
+        <button type="button" class="btn" data-set-mode="sandbox">Sandbox</button>
+      </div>
+    </section>
+
+    <aside class="drawer" id="settings" aria-labelledby="settingsTitle" hidden>
+      <div class="drawer-head">
+        <h2 id="settingsTitle">Settings</h2>
+        <button type="button" class="icon-btn" id="settingsClose" aria-label="Close settings">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+
+      <fieldset>
+        <legend>Mode</legend>
+        <div class="seg" role="group" aria-label="Game mode">
+          <button type="button" data-set-mode="pop">Orb Pop</button>
+          <button type="button" data-set-mode="sandbox">Sandbox</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Background</legend>
+        <div class="seg" role="group" aria-label="Background">
+          <button type="button" data-set-backdrop="studio">Studio</button>
+          <button type="button" data-set-backdrop="camera">My camera</button>
+        </div>
+        <p class="help">“My camera” draws the 3D hands over your video, so you can check they line up.</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Hand</legend>
+        <div class="swatches" id="swatches" role="radiogroup" aria-label="Hand look"></div>
+      </fieldset>
+
+      <fieldset class="toggles">
+        <legend>Options</legend>
+        <label class="toggle"><input type="checkbox" id="optMirror"> <span>Mirror view</span></label>
+        <label class="toggle"><input type="checkbox" id="optJoints"> <span>Show tracked joints</span></label>
+        <label class="toggle"><input type="checkbox" id="optSound"> <span>Sound</span></label>
+      </fieldset>
+
+      <fieldset>
+        <legend>True-scale calibration</legend>
+        <label class="range-label" for="optFov">Camera field of view <output id="fovOut" for="optFov">64°</output></label>
+        <input type="range" id="optFov" min="40" max="110" step="1" value="64">
+        <p class="help">Distance comes from your camera’s field of view. For an exact match, hold one open hand facing the camera at a measured distance, enter it, and press Calibrate.</p>
+        <div class="cal-row">
+          <label class="sr-only" for="calDist">Measured distance in centimetres</label>
+          <input type="number" id="calDist" min="15" max="150" step="1" value="40" inputmode="numeric">
+          <span class="unit">cm</span>
+          <button type="button" class="btn small" id="calBtn">Calibrate</button>
+        </div>
+      </fieldset>
+    </aside>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  </div>
+</body>
+</html>
