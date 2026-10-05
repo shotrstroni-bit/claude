@@ -104,6 +104,11 @@ TARGETS = [
     "head/head-oval", "head/head-scale-vert-decr", "chin/chin-width-decr",
     "mouth/mouth-lowerlip-volume-incr", "mouth/mouth-upperlip-volume-incr",
     "nose/nose-scale-horiz-decr", "neck/neck-scale-vert-incr",
+    # male body for partner characters
+    "macrodetails/universal-male-young-averagemuscle-averageweight",
+    "macrodetails/universal-male-young-maxmuscle-averageweight",
+    "macrodetails/height/male-young-averagemuscle-averageweight-maxheight",
+    "macrodetails/proportions/male-young-averagemuscle-averageweight-idealproportions",
 ]
 for s in "lr":
     TARGETS += [f"armslegs/{s}-upperleg-fat-incr", f"armslegs/{s}-lowerleg-fat-incr",
