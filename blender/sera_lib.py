@@ -4,9 +4,13 @@ Used by sera_character.py and sera_anim_test.py - keep this file in the
 same folder as them, with data/sera_base.npz next to it.
 
   build_human()   MakeHuman body + shape keys + skeleton + skin weights
+  round_butt()    rounder cheeks / deeper split shape key; add_glute_bones() for jiggle
   add_sera_face() eyes, hair cap, bun and side locks
   Rig             pose helpers in world terms, two-bone IK, keyframing
-  toon / outline / ghost materials, scene reset, stage setup
+  skin_material() anime skin (gloss, dark creases) - with set_gloss() and bake_crease()
+  toon / outline / ghost materials, one shared toon light (toon_light, set_toon_light)
+  hide_in_pov()   first-person view shows only his hands
+  scene reset, stage setup, mosaic censor, looping
 """
 import math
 import os
@@ -15,7 +19,8 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Vector
 
-LIGHT_DIR = Vector((0.45, -0.65, 0.6)).normalized()     # toon light, world space
+LIGHT_DIR = Vector((0.25, 0.35, 1.0)).normalized()      # toon key light, world space (mostly overhead)
+LIGHT_FOLLOW = 0.65         # how much the light also comes from the camera (0 = fixed sun)
 MH_TO_M = 0.1                                           # MakeHuman units are decimeters
 
 # ---------------------------------------------------------------- body definitions
@@ -118,6 +123,8 @@ def reset_scene():
                   bpy.data.cameras, bpy.data.metaballs, bpy.data.curves, bpy.data.actions):
         for item in list(block):
             block.remove(item)
+    if "ToonLight" in bpy.data.node_groups:          # rebuilt fresh, in case this file changed
+        bpy.data.node_groups.remove(bpy.data.node_groups["ToonLight"])
 
 
 def deselect_all():
@@ -125,16 +132,18 @@ def deselect_all():
         ob.select_set(False)
 
 
-def setup_stage(cam_location, look_at, floor_radius=0.9):
+def setup_stage(cam_location, look_at, floor_radius=0.9, background=(0.86, 0.90, 0.95),
+                floor_colors=((0.62, 0.78, 0.62), (0.50, 0.64, 0.50))):
     bpy.ops.mesh.primitive_circle_add(vertices=64, radius=floor_radius, fill_type="NGON")
     floor = bpy.context.active_object
     floor.name = "Floor"
-    floor.data.materials.append(toon_material("Floor", (0.62, 0.78, 0.62), (0.50, 0.64, 0.50)))
+    floor.data.materials.append(toon_material("Floor", *floor_colors))
 
     bpy.ops.object.light_add(type="SUN", location=(2, -3, 4))
     sun = bpy.context.active_object
     sun.data.energy = 3
-    sun.rotation_euler = Vector((0, 0, 1)).rotation_difference(LIGHT_DIR).to_euler()
+    sun.rotation_euler = Vector((0, 0, 1)).rotation_difference(LIGHT_DIR).to_euler()   # for reference only:
+    # the toon materials are self-lit (see toon_light), so they look the same in EEVEE and Cycles
 
     bpy.ops.object.camera_add(location=cam_location)
     cam = bpy.context.active_object
@@ -145,7 +154,7 @@ def setup_stage(cam_location, look_at, floor_radius=0.9):
     world = bpy.context.scene.world or bpy.data.worlds.new("World")
     bpy.context.scene.world = world
     world.use_nodes = True
-    world.node_tree.nodes["Background"].inputs["Color"].default_value = (0.86, 0.90, 0.95, 1)
+    world.node_tree.nodes["Background"].inputs["Color"].default_value = (*background, 1)
 
     engines = bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items.keys()
     bpy.context.scene.render.engine = "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in engines else "BLENDER_EEVEE"
@@ -154,12 +163,78 @@ def setup_stage(cam_location, look_at, floor_radius=0.9):
 
 
 # ---------------------------------------------------------------- materials
+def _node(nt, kind, *inputs, **props):
+    """Add a node, set properties, and feed its inputs (sockets get linked, numbers set)."""
+    n = nt.nodes.new(kind)
+    for k, v in props.items():
+        setattr(n, k, v)
+    for i, v in enumerate(inputs):
+        if v is None:
+            continue
+        if isinstance(v, bpy.types.NodeSocket):
+            nt.links.new(v, n.inputs[i])
+        else:
+            n.inputs[i].default_value = v
+    return n
+
+
+def _math(nt, op, a, b=None, c=None, clamp=False):
+    return _node(nt, "ShaderNodeMath", a, b, c, operation=op, use_clamp=clamp).outputs[0]
+
+
+def _vmath(nt, op, a, b=None, out="Vector"):
+    return _node(nt, "ShaderNodeVectorMath", a, b, operation=op).outputs[out]
+
+
+def _smooth(nt, value, lo, hi):
+    """0 below lo, 1 above hi, smooth in between (lo > hi flips it)."""
+    return _node(nt, "ShaderNodeMapRange", value, lo, hi, 0.0, 1.0,
+                 interpolation_type="SMOOTHSTEP", clamp=True).outputs[0]
+
+
+def toon_light():
+    """The one light every toon material reads. A key light from LIGHT_DIR blended with
+    light from the camera (LIGHT_FOLLOW), so whatever the player looks at gets lit from
+    the front and above - shadows fall under round shapes, highlights sit on top.
+    Outputs N.L, N.H (highlights) and N.V (rims), each -1..1. Change it with set_toon_light()."""
+    ng = bpy.data.node_groups.get("ToonLight")
+    if ng:
+        return ng
+    ng = bpy.data.node_groups.new("ToonLight", "ShaderNodeTree")
+    for name in ("NdotL", "NdotH", "NdotV"):
+        ng.interface.new_socket(name, in_out="OUTPUT", socket_type="NodeSocketFloat")
+    geo = ng.nodes.new("ShaderNodeNewGeometry")
+    key = _node(ng, "ShaderNodeCombineXYZ", *LIGHT_DIR, name="Key", label="Key light direction")
+    follow = _node(ng, "ShaderNodeValue", name="Follow", label="Follow camera")
+    follow.outputs[0].default_value = LIGHT_FOLLOW
+    view = geo.outputs["Incoming"]                                   # toward the camera
+    light = _vmath(ng, "NORMALIZE", _vmath(ng, "ADD", key.outputs[0],
+                                           _node(ng, "ShaderNodeVectorMath", view, None, None,
+                                                 follow.outputs[0], operation="SCALE").outputs[0]))
+    half = _vmath(ng, "NORMALIZE", _vmath(ng, "ADD", light, view))
+    out = ng.nodes.new("NodeGroupOutput")
+    for i, v in enumerate((light, half, view)):
+        ng.links.new(_vmath(ng, "DOT_PRODUCT", geo.outputs["Normal"], v, out="Value"), out.inputs[i])
+    return ng
+
+
+def set_toon_light(direction=None, follow=None):
+    """Re-aim the shared toon light, e.g. set_toon_light((0, -1, 1), follow=0) for a fixed sun."""
+    ng = toon_light()
+    if direction is not None:
+        for i, v in enumerate(Vector(direction).normalized()):
+            ng.nodes["Key"].inputs[i].default_value = v
+    if follow is not None:
+        ng.nodes["Follow"].outputs[0].default_value = follow
+
+
+def _light_node(nt):
+    grp = nt.nodes.new("ShaderNodeGroup")
+    grp.node_tree = toon_light()
+    return grp
+
+
 def _toon_ramp(nt, lit, shadow, highlight=None):
-    geo = nt.nodes.new("ShaderNodeNewGeometry")
-    light = nt.nodes.new("ShaderNodeCombineXYZ")
-    light.inputs[0].default_value, light.inputs[1].default_value, light.inputs[2].default_value = LIGHT_DIR
-    dot = nt.nodes.new("ShaderNodeVectorMath")
-    dot.operation = "DOT_PRODUCT"
     ramp = nt.nodes.new("ShaderNodeValToRGB")
     ramp.color_ramp.interpolation = "CONSTANT"
     ramp.color_ramp.elements[0].color = (*shadow, 1)
@@ -167,9 +242,7 @@ def _toon_ramp(nt, lit, shadow, highlight=None):
     ramp.color_ramp.elements[1].color = (*lit, 1)
     if highlight:
         ramp.color_ramp.elements.new(0.82).color = (*highlight, 1)
-    nt.links.new(geo.outputs["Normal"], dot.inputs[0])
-    nt.links.new(light.outputs[0], dot.inputs[1])
-    nt.links.new(dot.outputs["Value"], ramp.inputs["Fac"])
+    nt.links.new(_light_node(nt).outputs["NdotL"], ramp.inputs["Fac"])
     return ramp
 
 
@@ -194,8 +267,74 @@ def toon_material(name, lit, shadow, highlight=None):
     return mat
 
 
+def skin_material(name, lit, shadow, gloss=0.32, rim=0.12):
+    """Soft anime skin (self-lit like toon_material, so EEVEE and Cycles match):
+      - smooth falloff from light to shadow, with a warm band where they meet
+      - creases (between the cheeks, under the butt and breasts) darkened, read from the
+        'Crease' attribute that bake_crease() writes on the mesh
+      - a glossy highlight + broad sheen that slide over round shapes as they move,
+        which is what makes jiggle readable
+      - a faint cool rim along the silhouette
+    gloss/rim are strengths."""
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    light = _light_node(nt)
+    ndl, ndh, ndv = (light.outputs[k] for k in ("NdotL", "NdotH", "NdotV"))
+    crease = _node(nt, "ShaderNodeAttribute", attribute_name="Crease").outputs["Fac"]   # missing = 0
+    opened = _node(nt, "ShaderNodeMapRange", crease, 0.12, 0.7, 1.0, 0.45,
+                   interpolation_type="SMOOTHSTEP", clamp=True).outputs[0]
+    fac = _math(nt, "MULTIPLY", _math(nt, "MULTIPLY_ADD", ndl, 0.5, 0.5), opened)
+
+    ramp = _node(nt, "ShaderNodeValToRGB", fac)
+    ramp.color_ramp.interpolation = "LINEAR"
+    lit_v, shadow_v = Vector(lit), Vector(shadow)
+    warm = shadow_v.lerp(lit_v, 0.5)
+    warm = Vector((min(1.0, warm.x * 1.12), warm.y * 0.86, warm.z * 0.8))   # reddish, like light under skin
+    stops = [(0.0, shadow_v * 0.72), (0.40, shadow_v), (0.50, warm), (0.60, lit_v.lerp(warm, 0.4)),
+             (0.82, lit_v), (1.0, Vector([min(1.0, c * 1.15) for c in lit_v]))]
+    els = ramp.color_ramp.elements
+    els[0].position, els[0].color = stops[0][0], (*stops[0][1], 1)
+    els[1].position, els[1].color = stops[-1][0], (*stops[-1][1], 1)
+    for pos, col in stops[1:-1]:
+        els.new(pos).color = (*col, 1)
+
+    spot = _smooth(nt, ndh, 0.962, 0.988)
+    sheen = _math(nt, "POWER", _math(nt, "MAXIMUM", ndh, 0.0), 12.0)
+    shine = _math(nt, "MULTIPLY_ADD", sheen, 0.15, spot)
+    matte = _node(nt, "ShaderNodeAttribute", attribute_name="Matte").outputs["Fac"]   # see set_gloss
+    shine = _math(nt, "MULTIPLY", shine, _math(nt, "SUBTRACT", 1.0, matte))
+    shine = _math(nt, "MULTIPLY", shine, _smooth(nt, ndl, -0.1, 0.3))
+    shine = _math(nt, "MULTIPLY", shine, _smooth(nt, crease, 0.4, 0.1))
+    shine = _math(nt, "MULTIPLY", shine, gloss)
+    edge = _math(nt, "MULTIPLY", _smooth(nt, ndv, 0.42, 0.06), rim)
+
+    def scaled(color, amount):
+        return _node(nt, "ShaderNodeVectorMath", color, None, None, amount, operation="SCALE").outputs[0]
+
+    color = _vmath(nt, "ADD", ramp.outputs["Color"], scaled((1.0, 0.88, 0.80), shine))
+    color = _vmath(nt, "ADD", color, scaled((0.55, 0.50, 0.95), edge))
+    emit = _node(nt, "ShaderNodeEmission", color)
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    nt.links.new(emit.outputs[0], out.inputs["Surface"])
+    return mat
+
+
+def _pov_visibility(nt, near_fade=(0.25, 0.5), pov_range=(0.9, 1.6)):
+    """0..1 visibility for a first-person body: anything within near_fade=(start, end) m of
+    the camera fades out, and skin marked by hide_in_pov() disappears whenever the camera is
+    closer than pov_range (i.e. riding with him), while far cameras still see all of him."""
+    dist = nt.nodes.new("ShaderNodeCameraData").outputs["View Distance"]
+    hidden = _node(nt, "ShaderNodeAttribute", attribute_name="PovHide").outputs["Fac"]
+    close = _math(nt, "SUBTRACT", 1.0, _smooth(nt, dist, *pov_range))
+    return _math(nt, "MULTIPLY", _smooth(nt, dist, *near_fade),
+                 _math(nt, "SUBTRACT", 1.0, _math(nt, "MULTIPLY", hidden, close)))
+
+
 def ghost_material(name, lit, shadow, opacity=0.55):
-    """See-through toon material for the faceless 'ghost' partner."""
+    """See-through toon material for the faceless 'ghost' partner. In a POV shot his own
+    head and torso vanish (see hide_in_pov) so they don't block the view."""
     mat = bpy.data.materials.new(name)
     mat.use_nodes = True
     _set_blended(mat)
@@ -205,7 +344,7 @@ def ghost_material(name, lit, shadow, opacity=0.55):
     emit = nt.nodes.new("ShaderNodeEmission")
     clear = nt.nodes.new("ShaderNodeBsdfTransparent")
     mix = nt.nodes.new("ShaderNodeMixShader")
-    mix.inputs["Fac"].default_value = opacity
+    nt.links.new(_math(nt, "MULTIPLY", _pov_visibility(nt), opacity), mix.inputs["Fac"])
     out = nt.nodes.new("ShaderNodeOutputMaterial")
     nt.links.new(ramp.outputs["Color"], emit.inputs["Color"])
     nt.links.new(clear.outputs[0], mix.inputs[1])
@@ -214,8 +353,9 @@ def ghost_material(name, lit, shadow, opacity=0.55):
     return mat
 
 
-def outline_material(color=(0.16, 0.08, 0.08), name="Outline"):
-    """Inverted-hull ink line: show only the shell faces that point at the camera."""
+def outline_material(color=(0.16, 0.08, 0.08), name="Outline", pov=False):
+    """Inverted-hull ink line: show only the shell faces that point at the camera.
+    pov=True hides it the same way ghost_material hides a POV body."""
     if name in bpy.data.materials:
         return bpy.data.materials[name]
     mat = bpy.data.materials.new(name)
@@ -230,7 +370,10 @@ def outline_material(color=(0.16, 0.08, 0.08), name="Outline"):
     clear = nt.nodes.new("ShaderNodeBsdfTransparent")
     mix = nt.nodes.new("ShaderNodeMixShader")
     out = nt.nodes.new("ShaderNodeOutputMaterial")
-    nt.links.new(geo.outputs["Backfacing"], mix.inputs["Fac"])
+    hide = geo.outputs["Backfacing"]
+    if pov:
+        hide = _math(nt, "MAXIMUM", hide, _math(nt, "SUBTRACT", 1.0, _pov_visibility(nt)))
+    nt.links.new(hide, mix.inputs["Fac"])
     nt.links.new(ink.outputs[0], mix.inputs[1])     # Backfacing 0 -> ink (the rim)
     nt.links.new(clear.outputs[0], mix.inputs[2])   # Backfacing 1 -> see-through
     nt.links.new(mix.outputs[0], out.inputs["Surface"])
@@ -365,13 +508,63 @@ def build_human(name, base_targets, sliders, values, skin, outline, location=(0,
                 vg.add([vi], w, "ADD")
 
     body.parent = rig
-    body.modifiers.new("Armature", "ARMATURE").object = rig
+    arm_mod = body.modifiers.new("Armature", "ARMATURE")
+    arm_mod.object = rig
+    # dual-quaternion skinning: keeps hips and butt round when the legs fold up (plain
+    # linear skinning crushes them). Engines without it (e.g. Godot) need a corrective shape.
+    arm_mod.use_deform_preserve_volume = True
     sub = body.modifiers.new("Subdivision", "SUBSURF")
     sub.levels, sub.render_levels = 1, 2
     add_outline(body, outline_width, outline)
     rig.location = location
     bpy.context.view_layer.update()
     return Human(body, rig, final, used)
+
+
+def _smoothstep(e0, e1, x):
+    t = np.clip((x - e0) / (e1 - e0), 0, 1)
+    return t * t * (3 - 2 * t)
+
+
+def round_butt(h, amount=1.0, bulge=0.022, cleft=0.012):
+    """'Butt Round' shape key: pushes each cheek out onto a round (ellipsoid) dome, keeps the
+    inner sides falling away into a deeper cleft, and gives the bottom a defined under-curve.
+    Sized from the skeleton, so it follows the body sliders. bulge = extra push at the
+    fullest point (m), cleft = how much deeper the split gets (m). Call before add_glute_bones."""
+    final, used, body = h.final, h.used, h.body
+    co = final[used]
+    pel = final[D["joint:pelvis"]].mean(0)
+    hx = abs(final[D["joint:l-upper-leg"]].mean(0)[0])         # half hip-joint spacing
+    size = pel[2] / 1.13                                         # 1.0 for Sera's height
+    cx, cz = 0.82 * hx, pel[2] - 0.03 * size                     # cheek centers
+    rx, ry, rz = 0.92 * hx, 0.14 * size, 0.15 * size             # cheek dome radii
+    out = co.copy()
+    for s in (1, -1):
+        side = s * co[:, 0] > 0
+        back = side & (co[:, 1] > pel[1]) & (np.abs(co[:, 2] - cz) < rz * 1.3)
+        c = np.array([s * cx, co[back, 1].max() + bulge - ry, cz])
+        d = co - c
+        rho = np.maximum(np.linalg.norm(d / np.array([rx, ry, rz]), axis=1), 1e-6)
+        k = 0.12                                                  # soft max(1/rho, 1): no crease at the dome edge
+        f = np.maximum(0.5 * (1 / rho + 1 + np.sqrt((1 / rho - 1) ** 2 + k * k)) - k / 2, 1.0)
+        reach = np.hypot((co[:, 0] - s * cx) / (rx * 1.3), (co[:, 2] - cz) / (rz * 1.25))
+        w = ((1 - _smoothstep(0.6, 1.0, reach)) * _smoothstep(pel[1] - 0.01, pel[1] + 0.06, co[:, 1]) *
+             _smoothstep(0.0, 0.03, s * co[:, 0]) * side)
+        out += d * (f - 1)[:, None] * w[:, None]
+    # deepen the cleft: pull the back midline in
+    zc = _smoothstep(cz - rz * 1.1, cz - rz * 0.6, co[:, 2]) * (1 - _smoothstep(cz + rz * 0.7, cz + rz * 1.15, co[:, 2]))
+    out[:, 1] -= cleft * np.exp(-(co[:, 0] / 0.014) ** 2) * zc * _smoothstep(pel[1], pel[1] + 0.06, co[:, 1])
+    delta = out - co
+
+    basis = np.empty(len(body.data.vertices) * 3)
+    body.data.shape_keys.key_blocks["Basis"].data.foreach_get("co", basis)
+    key = body.shape_key_add(name="Butt Round", from_mix=False)
+    key.data.foreach_set("co", (basis.reshape(-1, 3) + delta).reshape(-1))
+    key.slider_min, key.slider_max = 0.0, 2.0
+    key.value = amount
+    h.final = final.copy()
+    h.final[used] = co + delta * amount
+    return key
 
 
 def add_glute_bones(h, radius=0.13):
@@ -405,6 +598,106 @@ def add_glute_bones(h, radius=0.13):
         for vi in np.where(w > 0.01)[0].tolist():
             vg.add([vi], float(w[vi]) * 1.5, "REPLACE")
     bpy.context.view_layer.update()
+
+
+def bake_crease(h, distance=0.07, rays=40):
+    """Bake how tucked-in each skin point is (ambient occlusion) for the CURRENT pose into a
+    'Crease' attribute (0 = open, 1 = deep fold) that skin_material darkens. Baked rather
+    than rendered so the outline shell doesn't count as an occluder, and it works the same
+    in EEVEE, Cycles and a game engine (it's just vertex data). Re-run after re-posing."""
+    from mathutils.bvhtree import BVHTree
+    body = h.body
+    toggled = [m for m in body.modifiers if m.type in ("SUBSURF", "SOLIDIFY") and m.show_viewport]
+    for m in toggled:
+        m.show_viewport = False
+    ev = body.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    me = ev.to_mesh()
+    n = len(me.vertices)
+    co = np.empty(n * 3)
+    nrm = np.empty(n * 3)
+    me.vertices.foreach_get("co", co)
+    me.vertices.foreach_get("normal", nrm)
+    co, nrm = co.reshape(-1, 3), nrm.reshape(-1, 3)
+    edges = np.empty(len(me.edges) * 2, dtype=np.int64)
+    me.edges.foreach_get("vertices", edges)
+    bvh = BVHTree.FromPolygons(co.tolist(), [tuple(p.vertices) for p in me.polygons])
+    ev.to_mesh_clear()
+    for m in toggled:
+        m.show_viewport = True
+
+    # cosine-weighted hemisphere directions (golden-angle spiral), turned to each normal
+    k = np.arange(rays) + 0.5
+    r, phi = np.sqrt(k / rays), k * math.pi * (3 - math.sqrt(5))
+    local = np.stack([r * np.cos(phi), r * np.sin(phi), np.sqrt(1 - r * r)], 1)
+    helper = np.where(np.abs(nrm[:, 2:3]) < 0.9, [[0, 0, 1]], [[1, 0, 0]])
+    t = np.cross(helper, nrm)
+    t /= np.maximum(np.linalg.norm(t, axis=1, keepdims=True), 1e-9)
+    b = np.cross(nrm, t)
+    dirs = (local[None, :, 0:1] * t[:, None] + local[None, :, 1:2] * b[:, None] +
+            local[None, :, 2:3] * nrm[:, None])
+    origins = co + nrm * 0.002
+    occ = np.zeros(n)
+    for i in range(n):
+        o = Vector(origins[i])
+        total = 0.0
+        for d in dirs[i]:
+            hit = bvh.ray_cast(o, Vector(d), distance)
+            if hit[0] is not None:
+                total += 1.0 - hit[3] / distance          # near walls count more
+        occ[i] = total / rays
+    e = edges.reshape(-1, 2)
+    for _ in range(2):                                    # soften the per-vertex noise
+        acc = np.zeros(n)
+        cnt = np.zeros(n)
+        np.add.at(acc, e[:, 0], occ[e[:, 1]])
+        np.add.at(acc, e[:, 1], occ[e[:, 0]])
+        np.add.at(cnt, e.ravel(), 1)
+        occ = 0.5 * occ + 0.5 * acc / np.maximum(cnt, 1)
+    occ = np.clip(occ * 2.2, 0, 1)                        # ~45% blocked counts as a full fold
+    attr = body.data.attributes.get("Crease") or body.data.attributes.new("Crease", "FLOAT", "POINT")
+    attr.data.foreach_set("value", occ.astype(np.float32))
+    body.data.update()
+    return occ
+
+
+def set_gloss(h, glossy=("glute.L", "glute.R", "hips", "thigh.L", "thigh.R", "breast.L", "breast.R"),
+              matte=0.8):
+    """Where skin_material may shine: full gloss on the skin of the `glossy` bones (butt,
+    thighs, breasts by default), dulled by `matte` (0..1) everywhere else - big flat areas
+    like the back otherwise catch blotchy highlights. Stored as a 'Matte' attribute."""
+    body = h.body
+    ids = {body.vertex_groups[b].index for b in glossy if b in body.vertex_groups}
+    n = len(body.data.vertices)
+    shine = np.zeros(n)
+    for v in body.data.vertices:
+        for g in v.groups:
+            if g.group in ids:
+                shine[v.index] = max(shine[v.index], g.weight)
+    edges = np.empty(len(body.data.edges) * 2, dtype=np.int64)
+    body.data.edges.foreach_get("vertices", edges)
+    e = edges.reshape(-1, 2)
+    for _ in range(3):                                    # soft edges between glossy and matte skin
+        acc, cnt = np.zeros(n), np.zeros(n)
+        np.add.at(acc, e[:, 0], shine[e[:, 1]])
+        np.add.at(acc, e[:, 1], shine[e[:, 0]])
+        np.add.at(cnt, e.ravel(), 1)
+        shine = 0.5 * shine + 0.5 * acc / np.maximum(cnt, 1)
+    values = (matte * (1 - _smoothstep(0.3, 0.75, shine))).astype(np.float32)   # core of each area only
+    attr = body.data.attributes.get("Matte") or body.data.attributes.new("Matte", "FLOAT", "POINT")
+    attr.data.foreach_set("value", values)
+    body.data.update()
+
+
+def hide_in_pov(h, keep=("upper_arm", "forearm", "hand", "finger")):
+    """Mark all his skin except the arms (`keep`) as 'PovHide', so ghost_material drops it
+    when the camera rides along with him - like a first-person game shows only your hands."""
+    body = h.body
+    wb, wv = D["weight_bones"][h.used], D["weight_values"][h.used].astype(np.float32)
+    arm = np.isin(wb, [i for i, b in enumerate(BONE_NAMES) if b.startswith(keep)])
+    values = (1 - np.clip((wv * arm).sum(1) * 1.5, 0, 1)).astype(np.float32)
+    attr = body.data.attributes.get("PovHide") or body.data.attributes.new("PovHide", "FLOAT", "POINT")
+    attr.data.foreach_set("value", values)
+    body.data.update()
 
 
 def _vertex_normals(co, quads):
@@ -649,6 +942,12 @@ class Rig:
         for pb in self.rig.pose.bones:
             pb.keyframe_insert("location", frame=frame)
             pb.keyframe_insert("rotation_quaternion", frame=frame)
+            pb.keyframe_insert("scale", frame=frame)
+
+    def squash(self, bone, along_x=1.0, along_y=1.0, along_z=1.0):
+        """Scale a bone in its own axes (call after rotate/shift for that bone)."""
+        self.pb(bone).scale = (along_x, along_y, along_z)
+        self.update()
 
     def surface(self):
         """Posed world-space vertices of the body (with modifiers as currently enabled)."""

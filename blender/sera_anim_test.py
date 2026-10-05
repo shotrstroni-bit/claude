@@ -1,9 +1,10 @@
 """Animation test: Sera bent over a table, ghost partner behind her, looping.
 
-A procedural loop: every frame is posed from a few sine waves (thrust,
-her answering rock with a lag, head bob, breast jiggle), with IK keeping
-hands and feet planted. The partner is the faceless see-through "ghost"
-used in the reference games.
+A procedural loop: every frame is posed from a few curves (his thrust, her
+answering rock with a lag, a head toss, breast swing, and butt cheeks driven
+like springs - squashed by each hit, then bouncing), with IK keeping hands and
+feet planted. The partner is the faceless see-through "ghost" used in the
+reference games; in the POV shot only his hands show.
 
 Run in Blender: Scripting tab -> Open this file -> Run Script (takes ~1 min).
 Then hover the 3D view and press Space to play. For his point of view:
@@ -18,7 +19,7 @@ import os
 import sys
 
 import bpy
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 
 def _add_script_dir():
@@ -46,15 +47,23 @@ importlib.reload(L)
 LOOP_FRAMES = 16          # frames per thrust (24 fps -> 1.5 per second)
 THRUST = 0.10             # how far his hips travel (meters)
 SNAP = 0.45               # 0 = even in/out, higher = snaps in and eases out
-PUSH = 0.062              # how far each hit shoves her forward
+PUSH = 0.05               # how far each hit shoves her forward
 LAG = 0.55                # her reaction delay (radians of the cycle)
-BEND = 86                 # how far she bends over (degrees)
-ARCH = 10                 # sway in her lower back (doggy-style arch)
+BEND = 106                # pelvis tipped forward (degrees) - more pushes her butt up and out
+ARCH = 22                 # lower-back sway that goes with it
+STANCE = 0.12             # half the gap between her feet - keeps her thighs under her butt
 HEAD_TOSS = 16            # head lifts on each hit (degrees)
 JIGGLE = 21               # breast swing (degrees)
-GLUTE = 12                 # butt wobble (degrees)
-GLUTE_SQUASH = 0.022      # butt flesh pushed in on impact (meters)
+GLUTE_SQUASH = 0.04       # butt flesh pushed in on impact (meters)
+GLUTE_SPREAD = 0.12       # cheeks flatten and spread on impact (fraction)
+GLUTE_WOBBLE = 14         # how far the cheeks bounce after the hit (degrees)
+WOBBLE_SPEED = 2.2        # bounces per thrust - higher = tighter, firmer flesh
+WOBBLE_DAMP = 0.2         # 0 = rings forever, 1 = no bounce at all
 CENSOR_SIZE = 0.035       # mosaic radius around the contact (meters)
+LEAN = 12                 # partner leans in over her (degrees)
+POV_BACK, POV_UP = 0.42, 0.30   # POV camera spot, behind and above the top of her butt (m)
+POV_LENS = 30             # mm - lower = wider view
+POV_BOB = 0.6             # how much the POV camera rides along with his thrusts
 
 SERA_BODY = {
     "Weight": 0.2, "Muscle": 0.15, "Height": 0.35, "Breast Size": 1.1, "Breast Perky": 1.3,
@@ -63,39 +72,26 @@ SERA_BODY = {
     "Slim Neck": 0.35, "Small Hands Feet": 0.25, "Face Soft": 0.5, "Lips Full": 0.45, "Eyes Big": 0.6,
     "Eyes Feline": 0.35, "Elf Ears": 1.0,
 }
-PARTNER_BODY = {"Muscle": 0.5, "Height": 0.65}
+BUTT_ROUND = 1.0          # 0..2, rounder cheeks and a deeper split (shape key "Butt Round")
+PARTNER_BODY = {"Muscle": 0.5, "Height": 0.72}
 
 TABLE_TOP = 0.64          # table height (m)
-TABLE_EDGE = -0.52        # y of the table edge nearest her
 
 # ---------------------------------------------------------------- build
 L.reset_scene()
 outline = L.outline_material()
 sera = L.build_human("Sera", L.SERA_BASE, L.SERA_SLIDERS, SERA_BODY,
-                     L.toon_material("Skin", (0.50, 0.26, 0.16), (0.30, 0.13, 0.09)), outline)
+                     L.skin_material("Skin", (0.50, 0.26, 0.16), (0.30, 0.13, 0.09)), outline)
 L.add_sera_face(sera, L.toon_material("Hair", (0.58, 0.44, 0.72), (0.34, 0.22, 0.48),
                                       highlight=(0.78, 0.66, 0.90)), (0.85, 0.45, 0.15), outline)
-L.add_glute_bones(sera)
+L.round_butt(sera, BUTT_ROUND)
+L.add_glute_bones(sera, radius=0.16)
+L.set_gloss(sera)                   # shiny butt, thighs and breasts; satin everywhere else
 ghost = L.build_human("Partner", L.MALE_BASE, L.MALE_SLIDERS, PARTNER_BODY,
                       L.ghost_material("Ghost", (0.30, 0.58, 1.0), (0.12, 0.30, 0.85), opacity=0.4),
-                      L.outline_material((0.05, 0.14, 0.50), "GhostOutline"),
+                      L.outline_material((0.05, 0.14, 0.50), "GhostOutline", pov=True),
                       location=(0, 0.6, 0), outline_width=0.004)
-
-# table
-wood = L.toon_material("Wood", (0.42, 0.22, 0.10), (0.26, 0.13, 0.06))
-bpy.ops.mesh.primitive_cube_add(size=1, location=(0, TABLE_EDGE - 0.38, TABLE_TOP - 0.025))
-top = bpy.context.active_object
-top.name = "Table"
-top.scale = (1.3, 0.76, 0.05)
-top.data.materials.append(wood)
-for x in (-0.58, 0.58):
-    for y in (TABLE_EDGE - 0.06, TABLE_EDGE - 0.70):
-        bpy.ops.mesh.primitive_cube_add(size=1, location=(x, y, (TABLE_TOP - 0.05) / 2))
-        leg = bpy.context.active_object
-        leg.scale = (0.06, 0.06, TABLE_TOP - 0.05)
-        leg.data.materials.append(wood)
-        leg.parent = top
-        leg.matrix_parent_inverse = top.matrix_world.inverted()
+L.hide_in_pov(ghost)                # in the POV shot only his hands and arms show
 
 # fast posing: skip subdivision/outline while baking, restore afterwards
 heavy = [m for h in (sera, ghost) for m in h.body.modifiers if m.type in ("SUBSURF", "SOLIDIFY")]
@@ -104,7 +100,7 @@ for m in heavy:
 
 S, G = sera.pose, ghost.pose
 ankle = {s: sera.joint(f"{s.lower()}-ankle") for s in "LR"}
-wrist = {s: Vector((side * 0.24, TABLE_EDGE - 0.12, TABLE_TOP + 0.035)) for s, side in (("L", 1), ("R", -1))}
+wrist = {}
 hand_verts = {s: sera.verts_of([f"hand.{s}"] + [f"finger{f}_{k}.{s}" for f in range(1, 6) for k in range(1, 4)])
               for s in "LR"}
 
@@ -119,6 +115,36 @@ def hit(phase, delay=0.0):
     return ((1 + stroke(phase - LAG - delay)) / 2) ** 2
 
 
+# the moment his hips land: the deepest point of the stroke
+IMPACT = max((i / 720 * 2 * math.pi for i in range(720)), key=stroke)
+
+
+def spring(speed, damp, delay=0.0, steps=720):
+    """Flesh as a damped spring knocked once per thrust (at IMPACT + delay). Simulated over a
+    few loops until it settles into a repeating motion, so the result loops seamlessly.
+    Returns f(phase) -> about -1..1 (+ = pushed in by the hit)."""
+    dt = 2 * math.pi / steps
+    w = speed                                     # natural frequency, in bounces per thrust
+    x = v = 0.0
+    last = []
+    for i in range(4 * steps):
+        p = (i * dt - IMPACT - delay + math.pi) % (2 * math.pi) - math.pi
+        knock = math.exp(-(p / 0.3) ** 2)         # short shove as his hips land
+        v += (knock * 12.0 - 2 * damp * w * v - w * w * x) * dt
+        x += v * dt
+        if i >= 3 * steps:
+            last.append(x)
+    peak = max(abs(a) for a in last)
+    last = [a / peak for a in last]
+    return lambda phase: last[int(round((phase % (2 * math.pi)) / dt)) % steps]
+
+
+# one spring per cheek, slightly different, so they don't move as one block
+squash = {"L": spring(WOBBLE_SPEED * 1.25, 0.45), "R": spring(WOBBLE_SPEED * 1.32, 0.45, 0.04)}
+bounce = {"L": spring(WOBBLE_SPEED, WOBBLE_DAMP, 0.25), "R": spring(WOBBLE_SPEED * 1.06, WOBBLE_DAMP, 0.3)}
+sway = {"L": spring(WOBBLE_SPEED * 0.8, WOBBLE_DAMP, 0.5), "R": spring(WOBBLE_SPEED * 0.86, WOBBLE_DAMP, 0.45)}
+
+
 def plant_leg(P, s, ankle_target, knee_dir):
     P.ik(f"thigh.{s}", f"shin.{s}", ankle_target, P.head(f"shin.{s}") + knee_dir)
     a = P.head(f"foot.{s}")
@@ -127,30 +153,35 @@ def plant_leg(P, s, ankle_target, knee_dir):
     P.aim(f"toe.{s}", Vector((t.x, t.y - 0.06, 0.01)))
 
 
-def pose_sera(phase):
+def pose_sera(phase, arms=True):
     h0 = hit(phase)
-    wobble = math.sin(2 * (phase - LAG) - 0.4)                  # flesh settling after the hit
     S.reset()
-    S.shift("hips", (0, 0.03 - PUSH * h0, -0.07 + 0.012 * h0))   # knees soft, hips lowered
+    S.shift("hips", (0, 0.03 - PUSH * h0, -0.10 + 0.012 * h0))   # knees soft, hips lowered
     S.rotate("hips", "X", BEND + 3 * h0)
-    # the hit travels up her spine as a wave, ending in a head lift
+    # sway back: the arch is in her lower back, her upper back stays long and low; the hit
+    # travels up the spine as a wave, ending in a head lift
     S.rotate("spine", "X", -ARCH - 3 * hit(phase, 0.25))
-    S.rotate("spine1", "X", -6 - 4 * hit(phase, 0.45))
-    S.rotate("chest", "X", -2 - 3 * hit(phase, 0.65))
+    S.rotate("spine1", "X", -8 - 4 * hit(phase, 0.45))
+    S.rotate("chest", "X", -4 - 3 * hit(phase, 0.65))
     S.rotate("neck", "X", -26 - 0.5 * HEAD_TOSS * hit(phase, 0.85))
     S.rotate("head", "X", -30 - HEAD_TOSS * hit(phase, 1.05))
     for s, side in (("L", 1), ("R", -1)):
-        plant_leg(S, s, Vector((side * 0.22, 0.10, ankle[s].z)), Vector((side * 0.25, -1, 0)))
-        S.ik(f"upper_arm.{s}", f"forearm.{s}", wrist[s], S.head(f"upper_arm.{s}") + Vector((side * 0.5, 0.25, 0.1)))
-        w = S.head(f"hand.{s}")
-        S.aim(f"hand.{s}", (w.x + side * 0.02, w.y - 0.15, w.z - 0.012))
-        S.level_palm(s)
+        plant_leg(S, s, Vector((side * STANCE, 0.10, ankle[s].z)), Vector((side * 0.25, -1, 0)))
+        if arms:
+            S.ik(f"upper_arm.{s}", f"forearm.{s}", wrist[s],
+                 S.head(f"upper_arm.{s}") + Vector((side * 0.5, 0.25, 0.1)))
+            w = S.head(f"hand.{s}")
+            S.aim(f"hand.{s}", (w.x + side * 0.02, w.y - 0.15, w.z - 0.012))
+            S.level_palm(s)
         swing = JIGGLE * (math.sin(phase - LAG - 1.1) + 0.45 * math.sin(2 * (phase - LAG) - 2.2))
         S.rotate(f"breast.{s}", "X", swing)
         S.rotate(f"breast.{s}", "Y", side * 0.25 * swing)
-        S.shift(f"glute.{s}", (0, -GLUTE_SQUASH * h0, 0))
-        S.rotate(f"glute.{s}", "X", GLUTE * wobble)
-        S.rotate(f"glute.{s}", "Y", side * 0.3 * GLUTE * wobble)
+        # butt: shoved in by the hit, then bounces and sways as it settles
+        p, b, w = squash[s](phase), bounce[s](phase), sway[s](phase)
+        S.shift(f"glute.{s}", (0, -GLUTE_SQUASH * max(p, -0.3), 0))
+        S.rotate(f"glute.{s}", "X", GLUTE_WOBBLE * b)
+        S.rotate(f"glute.{s}", "Y", side * 0.5 * GLUTE_WOBBLE * w)
+        S.squash(f"glute.{s}", 1 + GLUTE_SPREAD * 0.8 * p, 1 + GLUTE_SPREAD * 0.5 * p, 1 - GLUTE_SPREAD * p)
     S.curl_fingers(3, 3)
 
 
@@ -161,11 +192,37 @@ hip_v = sera.verts_of(["hips"])
 mid = hip_v[(abs(co[hip_v, 0]) < 0.012) & (abs(co[hip_v, 1] - pel.y) < 0.15)]
 her_spot = S.to_bone("hips", Vector(co[mid[co[mid, 2].argmin()]]))     # lowest midline point = crotch
 
+# hands: flat on the table, about 85% of her reach in front of her shoulders
+pose_sera(LAG, arms=False)
+reach = S.pb("upper_arm.L").length + S.pb("forearm.L").length
+for s, side in (("L", 1), ("R", -1)):
+    sh = S.head(f"upper_arm.{s}")
+    drop_z = sh.z - (TABLE_TOP + 0.035)
+    forward = math.sqrt(max((0.85 * reach) ** 2 - drop_z ** 2, 0.01))
+    wrist[s] = Vector((side * 0.24, sh.y - forward, TABLE_TOP + 0.035))
+table_edge = max(w.y for w in wrist.values()) + 0.12
+
 # settle the palms flat on the table top
 pose_sera(LAG)
 co = S.surface()
 for s in "LR":
     wrist[s].z -= co[hand_verts[s], 2].min() - (TABLE_TOP + 0.003)
+
+# table
+wood = L.toon_material("Wood", (0.42, 0.22, 0.10), (0.26, 0.13, 0.06))
+bpy.ops.mesh.primitive_cube_add(size=1, location=(0, table_edge - 0.38, TABLE_TOP - 0.025))
+top = bpy.context.active_object
+top.name = "Table"
+top.scale = (1.3, 0.76, 0.05)
+top.data.materials.append(wood)
+for x in (-0.58, 0.58):
+    for y in (table_edge - 0.06, table_edge - 0.70):
+        bpy.ops.mesh.primitive_cube_add(size=1, location=(x, y, (TABLE_TOP - 0.05) / 2))
+        leg = bpy.context.active_object
+        leg.scale = (0.06, 0.06, TABLE_TOP - 0.05)
+        leg.data.materials.append(wood)
+        leg.parent = top
+        leg.matrix_parent_inverse = top.matrix_world.inverted()
 
 # where her hips are when he's mid-thrust, and where his hands go
 pose_sera(LAG)
@@ -173,13 +230,12 @@ co = S.surface()
 pelvis = S.head("hips")
 band = (abs(co[:, 0]) < 0.08) & (abs(co[:, 2] - pelvis.z) < 0.12)
 butt_y = co[band, 1].max()
-contact_z = co[band][co[band, 1].argmax(), 2] - 0.06
 grip = {}
+hold = S.head("hips").lerp((S.tail("glute.L") + S.tail("glute.R")) / 2, 0.45)   # his hands on her hips
 for s, side in (("L", 1), ("R", -1)):
-    waist = S.head("spine")
-    m = (abs(co[:, 1] - waist.y) < 0.05) & (abs(co[:, 2] - waist.z) < 0.06)
+    m = (abs(co[:, 1] - hold.y) < 0.05) & (abs(co[:, 2] - hold.z) < 0.06)
     x = co[m, 0].max() if side > 0 else co[m, 0].min()
-    grip[s] = S.to_bone("hips", Vector((x + side * 0.006, waist.y, waist.z - 0.02)))
+    grip[s] = S.to_bone("hips", Vector((x + side * 0.006, hold.y, hold.z)))
 
 G.reset()
 gco = G.surface()
@@ -205,10 +261,10 @@ def pose_ghost(phase):
     G.reset()
     G.shift("hips", (0, -THRUST * 0.5 * t, min(drop, 0) - 0.01))
     G.rotate("hips", "X", -5 - 7 * (0.5 + 0.5 * t))  # pelvis tucks on the thrust
-    G.rotate("spine1", "X", 16 + 2 * t)              # leaning over her
-    G.rotate("chest", "X", 10)
-    G.rotate("neck", "X", 10)
-    G.rotate("head", "X", 22)
+    G.rotate("spine1", "X", 0.7 * LEAN + 2 * t)      # leaning in over her
+    G.rotate("chest", "X", 0.3 * LEAN)
+    G.rotate("neck", "X", 12)
+    G.rotate("head", "X", 20)                        # looking down at her
     for s, side in (("L", 1), ("R", -1)):
         plant_leg(G, s, Vector((g_ankle[s].x + side * 0.03, g_ankle[s].y + 0.04, g_ankle[s].z)),
                   Vector((side * 0.2, -1, 0)))
@@ -218,6 +274,38 @@ def pose_ghost(phase):
         G.aim(f"hand.{s}", w + Vector((-side * 0.03, -0.14, -0.06)))
     G.curl_fingers(25, 10)
 
+
+pose_ghost(LAG)
+for s_ in "LR":
+    need = (S.to_world_from_bone("hips", grip[s_]) - G.head(f"upper_arm.{s_}")).length
+    arm = G.pb(f"upper_arm.{s_}").length + G.pb(f"forearm.{s_}").length
+    print(f"his {s_} hand reach {need / arm:.0%} of arm length")
+
+# ---------------------------------------------------------------- POV camera
+# First-person view like a POV clip: behind and above her butt, looking down at about 45
+# degrees with her back running up the frame. It rides along with his hips; in this shot
+# his body is hidden except his hands and arms (hide_in_pov).
+pose_sera(LAG)
+pose_ghost(LAG)
+cheeks = (S.tail("glute.L") + S.tail("glute.R")) / 2
+eyes = cheeks + Vector((0, POV_BACK, POV_UP))
+look = cheeks + Vector((0, -0.11, -0.25))
+fwd = (look - eyes).normalized()
+up = Vector((0, -1, 0))                                  # top of the frame = toward her head
+right = fwd.cross(up).normalized()
+up = right.cross(fwd)
+bpy.ops.object.camera_add(location=eyes)
+pov = bpy.context.active_object
+pov.name = "POV_Cam"
+pov.data.lens = POV_LENS
+pov.data.clip_start = 0.05
+pov.matrix_world = Matrix((
+    (right.x, up.x, -fwd.x, eyes.x),
+    (right.y, up.y, -fwd.y, eyes.y),
+    (right.z, up.z, -fwd.z, eyes.z),
+    (0, 0, 0, 1)))
+his_ref = G.head("hips")
+print(f"POV looks {math.degrees(math.asin(-fwd.z)):.0f} degrees down at her butt")
 
 # ---------------------------------------------------------------- bake the loop
 scene = bpy.context.scene
@@ -229,26 +317,19 @@ for f in range(LOOP_FRAMES + 1):
     pose_ghost(phase)
     S.key(f + 1)
     G.key(f + 1)
-for h in (sera, ghost):
-    L.loop_action(h.rig)
+    pov.location = eyes + (G.head("hips") - his_ref) * POV_BOB
+    pov.keyframe_insert("location", frame=f + 1)
+for ob in (sera.rig, ghost.rig, pov):
+    L.loop_action(ob)
 for m in heavy:
     m.show_viewport = True
 scene.frame_set(1)
+L.bake_crease(sera)                 # dark creases (between the cheeks, under them) for this pose
 
 # ---------------------------------------------------------------- cameras
-L.setup_stage(cam_location=(4.0, -3.5, 1.5), look_at=(0, 0.1, 0.88), floor_radius=1.6)
+L.setup_stage(cam_location=(4.0, -3.5, 1.7), look_at=(0, -0.05, 0.95), floor_radius=1.6,
+              background=(0.34, 0.29, 0.36), floor_colors=((0.40, 0.33, 0.33), (0.30, 0.24, 0.25)))
 
-# POV: his eyes, looking down her back. Rides his head bone so it moves with him.
-eyes = (G.pb("head").matrix.translation + G.pb("head").tail) / 2
-eyes = ghost.rig.matrix_world @ eyes + Vector((0, -0.05, 0.02))
-bpy.ops.object.camera_add(location=eyes)
-pov = bpy.context.active_object
-pov.name = "POV_Cam"
-pov.data.lens = 28
-pov.data.clip_start = 0.42          # clips away his own head and chest, like a POV game
-look = (S.head("hips") + S.head("spine")) / 2
-pov.rotation_euler = (look - eyes).to_track_quat("-Z", "Y").to_euler()
-G.attach(pov, "head")
 
 # ---------------------------------------------------------------- censor
 # Small pixel mosaic over the genital contact only - it follows the hips, and switches

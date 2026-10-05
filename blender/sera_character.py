@@ -8,7 +8,8 @@ What this builds:
   - A game-ready skeleton (spine, arms, fingers, legs, toes, plus breast
     bones for jiggle physics) with skin weights.
   - A standing contrapposto pose: weight on one leg, hand on hip.
-  - Toon shading + ink outline that work in both EEVEE and Cycles.
+  - Anime skin shading (soft light-to-shadow falloff, glossy highlights, dark
+    creases) + ink outline, the same in EEVEE and Cycles.
 
 Run in Blender (4.2+ / 5.x): Scripting tab -> Open this file -> Run Script.
 Needs sera_lib.py and data/sera_base.npz next to this script. Clears the scene first.
@@ -69,6 +70,7 @@ BODY = {
     "Eyes Feline": 0.35,
     "Elf Ears": 1.0,
 }
+BUTT_ROUND = 1.0            # 0..2: rounder cheeks and a deeper split (shape key "Butt Round")
 
 COLORS = {
     "skin": ((0.50, 0.26, 0.16), (0.30, 0.13, 0.09)),   # (lit, shadow) warm caramel (linear values)
@@ -79,7 +81,9 @@ COLORS = {
 L.reset_scene()
 outline = L.outline_material()
 sera = L.build_human("Sera", L.SERA_BASE, L.SERA_SLIDERS, BODY,
-                     L.toon_material("Skin", *COLORS["skin"]), outline)
+                     L.skin_material("Skin", *COLORS["skin"]), outline)
+L.round_butt(sera, BUTT_ROUND)
+L.set_gloss(sera)                   # shiny butt, thighs and breasts; satin everywhere else
 L.add_sera_face(sera, L.toon_material("Hair", *COLORS["hair"], highlight=(0.78, 0.66, 0.90)),
                 COLORS["iris"], outline)
 rig, P = sera.rig, sera.pose
@@ -128,6 +132,7 @@ P.curl_fingers()
 # plant the lowest foot on the floor
 rig.location.z -= P.surface()[:, 2].min()
 P.update()
+L.bake_crease(sera)                 # dark creases for this pose
 
 # ---------------------------------------------------------------- stage
 L.setup_stage(cam_location=(1.2, -4.6, 1.05), look_at=(0, 0, 0.88))
