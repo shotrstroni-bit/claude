@@ -25,6 +25,17 @@ src/scenes/           boot → title → select → stage
 vendor/               phaser.min.js, embedded OFL fonts
 ```
 
+## 3D test
+
+`test3d.html` is a standalone cel-shaded 3D version of Android 18 for comparing against the 2D art. Open it directly in a browser. The model is sculpted in code from signed-distance shapes, meshed at load (about 2 s), and the outfit is painted by shaders.
+
+To change the 3D source in `src3d/`, rebuild the bundle:
+
+```
+npm install
+npm run build:3d
+```
+
 ## Status
 
 - [x] Title screen with animated parallax scenery and menu

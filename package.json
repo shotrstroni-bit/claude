@@ -1,0 +1,12 @@
+{
+  "name": "bombshell-brawl",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build:3d": "esbuild src3d/main.js --bundle --format=iife --minify --target=es2020 --outfile=dist/test3d.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "three": "^0.180.0"
+  }
+}

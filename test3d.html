@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bombshell Brawl 3D Test</title>
+  <link rel="stylesheet" href="vendor/fonts/fonts.css">
+  <style>
+    :root { --ink: #1a1030; --accent: #39c6ff; --gold: #ffd84a; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0a12; font-family: "Rajdhani", sans-serif; }
+    #stage { position: fixed; inset: 0; }
+    .hud { position: fixed; left: 16px; right: 16px; pointer-events: none; color: #fff; }
+    .top { top: 14px; display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+    .title { font-family: "Bangers", sans-serif; font-size: clamp(28px, 5vw, 48px); letter-spacing: 2px; line-height: 1;
+      color: var(--gold); -webkit-text-stroke: 2px var(--ink); text-shadow: 3px 4px 0 var(--ink); }
+    .title small { display: block; font-family: "Rajdhani", sans-serif; font-weight: 700; font-size: 16px; letter-spacing: 4px;
+      color: #fff; -webkit-text-stroke: 0; text-shadow: 0 2px 0 var(--ink); margin-top: 6px; }
+    .bottom { bottom: 14px; display: flex; justify-content: space-between; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; pointer-events: auto; }
+    button, a.btn { font: 700 16px "Rajdhani", sans-serif; letter-spacing: 1px; padding: 8px 14px; border-radius: 8px;
+      border: 2px solid var(--ink); background: #fff; color: var(--ink); cursor: pointer; text-decoration: none;
+      box-shadow: 0 3px 0 var(--ink); }
+    button:hover, a.btn:hover { background: var(--gold); }
+    button:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
+    .hint, #stats { font-weight: 700; font-size: 15px; text-shadow: 0 2px 0 var(--ink), 0 0 6px rgba(0,0,0,.4); }
+    #loader { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(11,10,18,.82); color: #fff;
+      font-family: "Bangers", sans-serif; font-size: 34px; letter-spacing: 3px; transition: opacity .4s; }
+    #loader.done { opacity: 0; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div id="stage"></div>
+  <div class="hud top">
+    <div class="title">Android 18 <small>3D TEST · CEL-SHADED</small></div>
+    <div id="stats" class="hint"></div>
+  </div>
+  <div class="hud bottom">
+    <div class="controls">
+      <button data-view="full">Full body</button>
+      <button data-view="face">Face</button>
+      <button data-view="back">Back</button>
+      <button id="btn-spin">Pause spin</button>
+      <button id="btn-outline">Outline: on</button>
+      <a class="btn" href="index.html">2D version</a>
+    </div>
+    <div class="hint">Drag to orbit · Scroll to zoom · 1/2/3 views · Space spin</div>
+  </div>
+  <div id="loader">SCULPTING…</div>
+  <script src="dist/test3d.js"></script>
+</body>
+</html>
