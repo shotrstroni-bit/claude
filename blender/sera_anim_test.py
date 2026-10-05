@@ -192,6 +192,6 @@ for m in heavy:
     m.show_viewport = True
 scene.frame_set(1)
 
-L.setup_stage(cam_location=(3.4, -3.0, 1.45), look_at=(0, 0.1, 0.78), floor_radius=1.6)
+L.setup_stage(cam_location=(4.0, -3.5, 1.5), look_at=(0, 0.1, 0.88), floor_radius=1.6)
 L.deselect_all()
 print("Animation test built:", LOOP_FRAMES, "frame loop")
