@@ -44,16 +44,17 @@ importlib.reload(L)
 # MOTION - edit and re-run
 # =====================================================================
 LOOP_FRAMES = 16          # frames per thrust (24 fps -> 1.5 per second)
-THRUST = 0.09             # how far his hips travel (meters)
+THRUST = 0.10             # how far his hips travel (meters)
 SNAP = 0.45               # 0 = even in/out, higher = snaps in and eases out
-PUSH = 0.045              # how far each hit shoves her forward
+PUSH = 0.062              # how far each hit shoves her forward
 LAG = 0.55                # her reaction delay (radians of the cycle)
-BEND = 62                 # how far she bends over (degrees)
-ARCH = 14                 # sway in her lower back (doggy-style arch)
-HEAD_TOSS = 10            # head lifts on each hit (degrees)
-JIGGLE = 16               # breast swing (degrees)
-GLUTE = 9                 # butt wobble (degrees)
-GLUTE_SQUASH = 0.016      # butt flesh pushed in on impact (meters)
+BEND = 86                 # how far she bends over (degrees)
+ARCH = 10                 # sway in her lower back (doggy-style arch)
+HEAD_TOSS = 16            # head lifts on each hit (degrees)
+JIGGLE = 21               # breast swing (degrees)
+GLUTE = 12                 # butt wobble (degrees)
+GLUTE_SQUASH = 0.022      # butt flesh pushed in on impact (meters)
+CENSOR_SIZE = 0.035       # mosaic radius around the contact (meters)
 
 SERA_BODY = {
     "Weight": 0.2, "Muscle": 0.15, "Height": 0.35, "Breast Size": 1.1, "Breast Perky": 1.3,
@@ -62,9 +63,9 @@ SERA_BODY = {
     "Slim Neck": 0.35, "Small Hands Feet": 0.25, "Face Soft": 0.5, "Lips Full": 0.45, "Eyes Big": 0.6,
     "Eyes Feline": 0.35, "Elf Ears": 1.0,
 }
-PARTNER_BODY = {"Muscle": 0.5, "Height": 0.4}
+PARTNER_BODY = {"Muscle": 0.5, "Height": 0.65}
 
-TABLE_TOP = 0.84          # table height (m)
+TABLE_TOP = 0.64          # table height (m)
 TABLE_EDGE = -0.52        # y of the table edge nearest her
 
 # ---------------------------------------------------------------- build
@@ -103,7 +104,7 @@ for m in heavy:
 
 S, G = sera.pose, ghost.pose
 ankle = {s: sera.joint(f"{s.lower()}-ankle") for s in "LR"}
-wrist = {s: Vector((side * 0.24, TABLE_EDGE - 0.16, TABLE_TOP + 0.035)) for s, side in (("L", 1), ("R", -1))}
+wrist = {s: Vector((side * 0.24, TABLE_EDGE - 0.12, TABLE_TOP + 0.035)) for s, side in (("L", 1), ("R", -1))}
 hand_verts = {s: sera.verts_of([f"hand.{s}"] + [f"finger{f}_{k}.{s}" for f in range(1, 6) for k in range(1, 4)])
               for s in "LR"}
 
@@ -130,16 +131,16 @@ def pose_sera(phase):
     h0 = hit(phase)
     wobble = math.sin(2 * (phase - LAG) - 0.4)                  # flesh settling after the hit
     S.reset()
-    S.shift("hips", (0, 0.03 - PUSH * h0, -0.02 + 0.012 * h0))
+    S.shift("hips", (0, 0.03 - PUSH * h0, -0.07 + 0.012 * h0))   # knees soft, hips lowered
     S.rotate("hips", "X", BEND + 3 * h0)
     # the hit travels up her spine as a wave, ending in a head lift
     S.rotate("spine", "X", -ARCH - 3 * hit(phase, 0.25))
-    S.rotate("spine1", "X", -8 - 4 * hit(phase, 0.45))
-    S.rotate("chest", "X", -4 - 3 * hit(phase, 0.65))
-    S.rotate("neck", "X", -18 - 0.5 * HEAD_TOSS * hit(phase, 0.85))
-    S.rotate("head", "X", -24 - HEAD_TOSS * hit(phase, 1.05))
+    S.rotate("spine1", "X", -6 - 4 * hit(phase, 0.45))
+    S.rotate("chest", "X", -2 - 3 * hit(phase, 0.65))
+    S.rotate("neck", "X", -26 - 0.5 * HEAD_TOSS * hit(phase, 0.85))
+    S.rotate("head", "X", -30 - HEAD_TOSS * hit(phase, 1.05))
     for s, side in (("L", 1), ("R", -1)):
-        plant_leg(S, s, Vector((side * 0.16, 0.10, ankle[s].z)), Vector((side * 0.15, -1, 0)))
+        plant_leg(S, s, Vector((side * 0.22, 0.10, ankle[s].z)), Vector((side * 0.25, -1, 0)))
         S.ik(f"upper_arm.{s}", f"forearm.{s}", wrist[s], S.head(f"upper_arm.{s}") + Vector((side * 0.5, 0.25, 0.1)))
         w = S.head(f"hand.{s}")
         S.aim(f"hand.{s}", (w.x + side * 0.02, w.y - 0.15, w.z - 0.012))
@@ -152,6 +153,13 @@ def pose_sera(phase):
         S.rotate(f"glute.{s}", "Y", side * 0.3 * GLUTE * wobble)
     S.curl_fingers(3, 3)
 
+
+# censor anchor points, measured at rest and stored relative to each hip bone
+S.reset()
+co, pel = S.surface(), S.head("hips")
+hip_v = sera.verts_of(["hips"])
+mid = hip_v[(abs(co[hip_v, 0]) < 0.012) & (abs(co[hip_v, 1] - pel.y) < 0.15)]
+her_spot = S.to_bone("hips", Vector(co[mid[co[mid, 2].argmin()]]))     # lowest midline point = crotch
 
 # settle the palms flat on the table top
 pose_sera(LAG)
@@ -171,18 +179,25 @@ for s, side in (("L", 1), ("R", -1)):
     waist = S.head("spine")
     m = (abs(co[:, 1] - waist.y) < 0.05) & (abs(co[:, 2] - waist.z) < 0.06)
     x = co[m, 0].max() if side > 0 else co[m, 0].min()
-    grip[s] = S.to_bone("hips", Vector((x + side * 0.03, waist.y, waist.z + 0.02)))
+    grip[s] = S.to_bone("hips", Vector((x + side * 0.006, waist.y, waist.z - 0.02)))
 
 G.reset()
 gco = G.surface()
 g_pelvis = G.head("hips")
 gband = (abs(gco[:, 0]) < 0.08) & (abs(gco[:, 2] - g_pelvis.z) < 0.05)
 front_y = gco[gband, 1].min()
+g_hip_v = ghost.verts_of(["hips"])
+gmid = g_hip_v[(abs(gco[g_hip_v, 0]) < 0.015) & (gco[g_hip_v, 2] < g_pelvis.z - 0.10) &
+               (gco[g_hip_v, 2] > g_pelvis.z - 0.17)]
+his_spot = G.to_bone("hips", Vector(gco[gmid[gco[gmid, 1].argmin()]]))   # base of his groin
 ghost.rig.location.y += butt_y - front_y - 0.005       # just touching at mid-thrust
 G.update()
 g_ankle = {s: ghost.joint(f"{s.lower()}-ankle") for s in "LR"}
-drop = contact_z - g_pelvis.z
-print(f"contact height {contact_z:.3f}, partner pelvis {g_pelvis.z:.3f}, drop {drop:+.3f}")
+crotch = S.bone_point("hips", her_spot)
+root = G.bone_point("hips", his_spot)
+drop = crotch.z + 0.01 - root.z                       # his groin level with hers; he bends his knees
+print(f"her crotch z {crotch.z:.3f}, his groin z {root.z:.3f}, his hips drop {drop:+.3f} "
+      f"({'OK' if drop <= 0 else 'partner too short - raise his Height'})")
 
 
 def pose_ghost(phase):
@@ -190,9 +205,9 @@ def pose_ghost(phase):
     G.reset()
     G.shift("hips", (0, -THRUST * 0.5 * t, min(drop, 0) - 0.01))
     G.rotate("hips", "X", -5 - 7 * (0.5 + 0.5 * t))  # pelvis tucks on the thrust
-    G.rotate("spine1", "X", 8 + 2 * t)
-    G.rotate("chest", "X", 6)
-    G.rotate("neck", "X", 12)
+    G.rotate("spine1", "X", 16 + 2 * t)              # leaning over her
+    G.rotate("chest", "X", 10)
+    G.rotate("neck", "X", 10)
     G.rotate("head", "X", 22)
     for s, side in (("L", 1), ("R", -1)):
         plant_leg(G, s, Vector((g_ankle[s].x + side * 0.03, g_ankle[s].y + 0.04, g_ankle[s].z)),
@@ -225,15 +240,21 @@ L.setup_stage(cam_location=(4.0, -3.5, 1.5), look_at=(0, 0.1, 0.88), floor_radiu
 
 # POV: his eyes, looking down her back. Rides his head bone so it moves with him.
 eyes = (G.pb("head").matrix.translation + G.pb("head").tail) / 2
-eyes = ghost.rig.matrix_world @ eyes + Vector((0, -0.09, 0))
+eyes = ghost.rig.matrix_world @ eyes + Vector((0, -0.05, 0.02))
 bpy.ops.object.camera_add(location=eyes)
 pov = bpy.context.active_object
 pov.name = "POV_Cam"
-pov.data.lens = 24
-pov.data.clip_start = 0.02
-look = (S.head("hips") + S.head("spine1")) / 2 + Vector((0, 0.04, 0))
+pov.data.lens = 28
+pov.data.clip_start = 0.42          # clips away his own head and chest, like a POV game
+look = (S.head("hips") + S.head("spine")) / 2
 pov.rotation_euler = (look - eyes).to_track_quat("-Z", "Y").to_euler()
 G.attach(pov, "head")
+
+# ---------------------------------------------------------------- censor
+# Small pixel mosaic over the genital contact only - it follows the hips, and switches
+# off whenever her body hides that spot from the active camera.
+L.add_mosaic_censor(lambda dg: (S.bone_point("hips", her_spot, dg), G.bone_point("hips", his_spot, dg)),
+                    sera.body, radius=CENSOR_SIZE)
 
 L.deselect_all()
 print("Animation test built:", LOOP_FRAMES, "frame loop")

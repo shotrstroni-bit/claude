@@ -547,6 +547,11 @@ class Rig:
         """A point stored in a bone's space (see to_bone) -> world, following the pose."""
         return self.rig.matrix_world @ self.pb(bone).matrix @ Vector(local)
 
+    def bone_point(self, bone, local, depsgraph=None):
+        """Like to_world_from_bone, but reads the evaluated pose (safe inside handlers/renders)."""
+        rig = self.rig.evaluated_get(depsgraph) if depsgraph else self.rig
+        return rig.matrix_world @ rig.pose.bones[bone].matrix @ Vector(local)
+
     def to_bone(self, bone, world_point):
         return (self.rig.matrix_world @ self.pb(bone).matrix).inverted() @ Vector(world_point)
 
@@ -660,6 +665,100 @@ class Rig:
         m = (np.abs(co[:, 2] - z) < 0.015) & (co[:, 1] > y_band[0]) & (co[:, 1] < y_band[1])
         xs = co[m, 0]
         return xs.max() if side > 0 else xs.min()
+
+
+# ---------------------------------------------------------------- censor
+def _compositor(scene):
+    """Fresh compositor graph: render -> (pixelated where the mask is) -> output.
+    Returns (mask node, pixelate node). Handles Blender 5.x and 4.x."""
+    scene.render.use_compositing = True
+    if hasattr(scene, "compositing_node_group"):                     # Blender 5.x
+        tree = scene.compositing_node_group
+        if tree is None:
+            tree = bpy.data.node_groups.new("Compositor", "CompositorNodeTree")
+            scene.compositing_node_group = tree
+        tree.nodes.clear()
+        if not any(i.item_type == "SOCKET" and i.in_out == "OUTPUT" for i in tree.interface.items_tree):
+            tree.interface.new_socket("Image", in_out="OUTPUT", socket_type="NodeSocketColor")
+        out = tree.nodes.new("NodeGroupOutput")
+        mix = tree.nodes.new("ShaderNodeMix")
+        mix.data_type = "RGBA"
+        sock = {x.identifier: x for x in [*mix.inputs, *mix.outputs]}
+        fac, a, b, res = sock["Factor_Float"], sock["A_Color"], sock["B_Color"], sock["Result_Color"]
+    else:                                                             # Blender 4.x
+        scene.use_nodes = True
+        tree = scene.node_tree
+        tree.nodes.clear()
+        out = tree.nodes.new("CompositorNodeComposite")
+        mix = tree.nodes.new("CompositorNodeMixRGB")
+        fac, a, b, res = mix.inputs[0], mix.inputs[1], mix.inputs[2], mix.outputs[0]
+    render = tree.nodes.new("CompositorNodeRLayers")
+    pix = tree.nodes.new("CompositorNodePixelate")
+    mask = tree.nodes.new("CompositorNodeEllipseMask")
+    mask.name = "CensorMask"
+    tree.links.new(render.outputs["Image"], pix.inputs[0])
+    tree.links.new(render.outputs["Image"], a)
+    tree.links.new(pix.outputs[0], b)
+    tree.links.new(mask.outputs["Mask"], fac)
+    tree.links.new(res, out.inputs[0])
+    return mask, pix
+
+
+def _set_mask(mask, pix, cx, cy, w, h, angle, block):
+    """Mask center/size in 0..1 of the frame, angle in radians, block in pixels."""
+    if "Position" in mask.inputs:                                     # Blender 5.x sockets
+        mask.inputs["Position"].default_value = (cx, cy)
+        mask.inputs["Size"].default_value = (w, h)
+        mask.inputs["Rotation"].default_value = angle
+        pix.inputs["Size"].default_value = block
+    else:                                                             # Blender 4.x properties
+        mask.x, mask.y, mask.width, mask.height = cx, cy, w, h
+        mask.rotation = angle
+        if hasattr(pix, "pixel_size"):
+            pix.pixel_size = block
+
+
+def add_mosaic_censor(segment_fn, occluder, radius=0.035, blocks=45):
+    """Pixel-mosaic a small patch over a moving 3D segment (e.g. a genital contact point),
+    seen from whatever camera is active. Samples hidden behind `occluder` are skipped,
+    so the patch disappears when that spot isn't visible. Updates every frame."""
+    from bpy_extras.object_utils import world_to_camera_view
+    mask, pix = _compositor(bpy.context.scene)
+
+    def censor_update(scene, depsgraph=None):
+        dg = depsgraph or bpy.context.evaluated_depsgraph_get()
+        cam = scene.camera
+        rx = scene.render.resolution_x * scene.render.resolution_percentage / 100
+        ry = scene.render.resolution_y * scene.render.resolution_percentage / 100
+        block = max(3, round(ry / blocks))
+        a, b = segment_fn(dg)
+        cam_pos = cam.matrix_world.translation
+        inv = occluder.matrix_world.inverted()
+        visible = []
+        for t in (0, 0.25, 0.5, 0.75, 1):
+            p = a.lerp(b, t)
+            o, d = inv @ cam_pos, inv @ p - inv @ cam_pos
+            hit = occluder.ray_cast(o, d.normalized(), distance=max(0.0, d.length - 0.025), depsgraph=dg)[0]
+            if not hit:
+                visible.append(p)
+        if not visible:
+            _set_mask(mask, pix, 0.5, 0.5, 0, 0, 0, block)
+            return
+        pts = [world_to_camera_view(scene, cam, p) for p in visible]
+        sensor = cam.data.sensor_width if rx >= ry else cam.data.sensor_width * rx / ry
+        depth = max(0.05, sum(p.z for p in pts) / len(pts))
+        r_px = radius * (cam.data.lens / sensor) * rx / depth
+        p0, p1 = Vector((pts[0].x * rx, pts[0].y * ry)), Vector((pts[-1].x * rx, pts[-1].y * ry))
+        mid, span = (p0 + p1) / 2, (p1 - p0)
+        angle = math.atan2(span.y, span.x) if span.length > 1 else 0.0
+        _set_mask(mask, pix, mid.x / rx, mid.y / ry, (span.length + 2 * r_px) / rx, 2 * r_px / rx, angle, block)
+
+    handlers = bpy.app.handlers.frame_change_post
+    for h in [h for h in handlers if getattr(h, "__name__", "") == "censor_update"]:
+        handlers.remove(h)
+    handlers.append(censor_update)
+    censor_update(bpy.context.scene)
+    return censor_update
 
 
 def loop_action(rig):
