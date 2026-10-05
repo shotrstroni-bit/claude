@@ -6,7 +6,8 @@ hands and feet planted. The partner is the faceless see-through "ghost"
 used in the reference games.
 
 Run in Blender: Scripting tab -> Open this file -> Run Script (takes ~1 min).
-Then hover the 3D view and press Space to play. Needs sera_lib.py and
+Then hover the 3D view and press Space to play. For his point of view:
+click POV_Cam in the Outliner, hover the 3D view, press Ctrl+Numpad0. Needs sera_lib.py and
 data/sera_base.npz next to this script. Clears the scene first.
 
 Tweak the MOTION numbers below and re-run.
@@ -43,12 +44,16 @@ importlib.reload(L)
 # MOTION - edit and re-run
 # =====================================================================
 LOOP_FRAMES = 16          # frames per thrust (24 fps -> 1.5 per second)
-THRUST = 0.08             # how far his hips travel (meters)
-PUSH = 0.025              # how far she gets pushed forward
-LAG = 0.7                 # her reaction delay (radians of the cycle)
-BEND = 60                 # how far she bends over (degrees)
-JIGGLE = 12               # breast swing (degrees)
-HEAD_BOB = 5              # degrees
+THRUST = 0.09             # how far his hips travel (meters)
+SNAP = 0.45               # 0 = even in/out, higher = snaps in and eases out
+PUSH = 0.045              # how far each hit shoves her forward
+LAG = 0.55                # her reaction delay (radians of the cycle)
+BEND = 62                 # how far she bends over (degrees)
+ARCH = 14                 # sway in her lower back (doggy-style arch)
+HEAD_TOSS = 10            # head lifts on each hit (degrees)
+JIGGLE = 16               # breast swing (degrees)
+GLUTE = 9                 # butt wobble (degrees)
+GLUTE_SQUASH = 0.016      # butt flesh pushed in on impact (meters)
 
 SERA_BODY = {
     "Weight": 0.2, "Muscle": 0.15, "Height": 0.35, "Breast Size": 1.1, "Breast Perky": 1.3,
@@ -69,6 +74,7 @@ sera = L.build_human("Sera", L.SERA_BASE, L.SERA_SLIDERS, SERA_BODY,
                      L.toon_material("Skin", (0.50, 0.26, 0.16), (0.30, 0.13, 0.09)), outline)
 L.add_sera_face(sera, L.toon_material("Hair", (0.58, 0.44, 0.72), (0.34, 0.22, 0.48),
                                       highlight=(0.78, 0.66, 0.90)), (0.85, 0.45, 0.15), outline)
+L.add_glute_bones(sera)
 ghost = L.build_human("Partner", L.MALE_BASE, L.MALE_SLIDERS, PARTNER_BODY,
                       L.ghost_material("Ghost", (0.30, 0.58, 1.0), (0.12, 0.30, 0.85), opacity=0.4),
                       L.outline_material((0.05, 0.14, 0.50), "GhostOutline"),
@@ -97,7 +103,19 @@ for m in heavy:
 
 S, G = sera.pose, ghost.pose
 ankle = {s: sera.joint(f"{s.lower()}-ankle") for s in "LR"}
-g_ankle = {s: ghost.joint(f"{s.lower()}-ankle") for s in "LR"}
+wrist = {s: Vector((side * 0.24, TABLE_EDGE - 0.16, TABLE_TOP + 0.035)) for s, side in (("L", 1), ("R", -1))}
+hand_verts = {s: sera.verts_of([f"hand.{s}"] + [f"finger{f}_{k}.{s}" for f in range(1, 6) for k in range(1, 4)])
+              for s in "LR"}
+
+
+def stroke(phase):
+    """-1 (pulled out) .. +1 (deepest). SNAP warps it so the push is quicker than the pull."""
+    return math.sin(phase + SNAP * math.sin(phase))
+
+
+def hit(phase, delay=0.0):
+    """0..1 impact felt by her body, sharper than the stroke, arriving `delay` later."""
+    return ((1 + stroke(phase - LAG - delay)) / 2) ** 2
 
 
 def plant_leg(P, s, ankle_target, knee_dir):
@@ -109,30 +127,40 @@ def plant_leg(P, s, ankle_target, knee_dir):
 
 
 def pose_sera(phase):
-    r = 0.5 + 0.5 * math.sin(phase - LAG)          # 0..1, how hard she's been pushed
+    h0 = hit(phase)
+    wobble = math.sin(2 * (phase - LAG) - 0.4)                  # flesh settling after the hit
     S.reset()
-    S.shift("hips", (0, 0.03 - PUSH * r, -0.02))
-    S.rotate("hips", "X", BEND + 2 * r)
-    S.rotate("spine", "X", -10)
-    S.rotate("spine1", "X", -6 - 3 * r)             # back arches on impact
-    S.rotate("chest", "X", -4)
-    S.rotate("neck", "X", -18)
-    S.rotate("head", "X", -24 + HEAD_BOB * math.sin(phase - LAG - 0.6))
+    S.shift("hips", (0, 0.03 - PUSH * h0, -0.02 + 0.012 * h0))
+    S.rotate("hips", "X", BEND + 3 * h0)
+    # the hit travels up her spine as a wave, ending in a head lift
+    S.rotate("spine", "X", -ARCH - 3 * hit(phase, 0.25))
+    S.rotate("spine1", "X", -8 - 4 * hit(phase, 0.45))
+    S.rotate("chest", "X", -4 - 3 * hit(phase, 0.65))
+    S.rotate("neck", "X", -18 - 0.5 * HEAD_TOSS * hit(phase, 0.85))
+    S.rotate("head", "X", -24 - HEAD_TOSS * hit(phase, 1.05))
     for s, side in (("L", 1), ("R", -1)):
         plant_leg(S, s, Vector((side * 0.16, 0.10, ankle[s].z)), Vector((side * 0.15, -1, 0)))
-        sh = S.head(f"upper_arm.{s}")
-        S.ik(f"upper_arm.{s}", f"forearm.{s}", (side * 0.24, TABLE_EDGE - 0.16, TABLE_TOP + 0.035),
-             sh + Vector((side * 0.5, 0.25, 0.1)))
+        S.ik(f"upper_arm.{s}", f"forearm.{s}", wrist[s], S.head(f"upper_arm.{s}") + Vector((side * 0.5, 0.25, 0.1)))
         w = S.head(f"hand.{s}")
-        S.aim(f"hand.{s}", (w.x + side * 0.02, w.y - 0.15, TABLE_TOP + 0.02))
-        swing = JIGGLE * math.sin(phase - LAG - 1.1)
+        S.aim(f"hand.{s}", (w.x + side * 0.02, w.y - 0.15, w.z - 0.012))
+        S.level_palm(s)
+        swing = JIGGLE * (math.sin(phase - LAG - 1.1) + 0.45 * math.sin(2 * (phase - LAG) - 2.2))
         S.rotate(f"breast.{s}", "X", swing)
         S.rotate(f"breast.{s}", "Y", side * 0.25 * swing)
-    S.curl_fingers(4, 4)
+        S.shift(f"glute.{s}", (0, -GLUTE_SQUASH * h0, 0))
+        S.rotate(f"glute.{s}", "X", GLUTE * wobble)
+        S.rotate(f"glute.{s}", "Y", side * 0.3 * GLUTE * wobble)
+    S.curl_fingers(3, 3)
 
+
+# settle the palms flat on the table top
+pose_sera(LAG)
+co = S.surface()
+for s in "LR":
+    wrist[s].z -= co[hand_verts[s], 2].min() - (TABLE_TOP + 0.003)
 
 # where her hips are when he's mid-thrust, and where his hands go
-pose_sera(0.0 + LAG)
+pose_sera(LAG)
 co = S.surface()
 pelvis = S.head("hips")
 band = (abs(co[:, 0]) < 0.08) & (abs(co[:, 2] - pelvis.z) < 0.12)
@@ -158,14 +186,14 @@ print(f"contact height {contact_z:.3f}, partner pelvis {g_pelvis.z:.3f}, drop {d
 
 
 def pose_ghost(phase):
-    t = math.sin(phase)                              # -1 out .. +1 deepest
+    t = stroke(phase)
     G.reset()
     G.shift("hips", (0, -THRUST * 0.5 * t, min(drop, 0) - 0.01))
-    G.rotate("hips", "X", -5 - 6 * (0.5 + 0.5 * t))  # pelvis tucks on the thrust
-    G.rotate("spine1", "X", 8)
+    G.rotate("hips", "X", -5 - 7 * (0.5 + 0.5 * t))  # pelvis tucks on the thrust
+    G.rotate("spine1", "X", 8 + 2 * t)
     G.rotate("chest", "X", 6)
     G.rotate("neck", "X", 12)
-    G.rotate("head", "X", 18)
+    G.rotate("head", "X", 22)
     for s, side in (("L", 1), ("R", -1)):
         plant_leg(G, s, Vector((g_ankle[s].x + side * 0.03, g_ankle[s].y + 0.04, g_ankle[s].z)),
                   Vector((side * 0.2, -1, 0)))
@@ -192,6 +220,20 @@ for m in heavy:
     m.show_viewport = True
 scene.frame_set(1)
 
+# ---------------------------------------------------------------- cameras
 L.setup_stage(cam_location=(4.0, -3.5, 1.5), look_at=(0, 0.1, 0.88), floor_radius=1.6)
+
+# POV: his eyes, looking down her back. Rides his head bone so it moves with him.
+eyes = (G.pb("head").matrix.translation + G.pb("head").tail) / 2
+eyes = ghost.rig.matrix_world @ eyes + Vector((0, -0.09, 0))
+bpy.ops.object.camera_add(location=eyes)
+pov = bpy.context.active_object
+pov.name = "POV_Cam"
+pov.data.lens = 24
+pov.data.clip_start = 0.02
+look = (S.head("hips") + S.head("spine1")) / 2 + Vector((0, 0.04, 0))
+pov.rotation_euler = (look - eyes).to_track_quat("-Z", "Y").to_euler()
+G.attach(pov, "head")
+
 L.deselect_all()
 print("Animation test built:", LOOP_FRAMES, "frame loop")

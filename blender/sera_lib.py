@@ -274,9 +274,14 @@ def eye_material(iris):
 class Human:
     """A built character: body mesh, rig, and the rest-shape vertices (world)."""
 
-    def __init__(self, body, rig, final):
-        self.body, self.rig, self.final = body, rig, final
+    def __init__(self, body, rig, final, used):
+        self.body, self.rig, self.final, self.used = body, rig, final, used
         self.pose = Rig(rig, body)
+
+    def verts_of(self, bones):
+        """Body-mesh vertex indices whose strongest skin weight is one of these bones."""
+        idx = [BONE_NAMES.index(b) for b in bones]
+        return np.where(np.isin(D["weight_bones"][self.used, 0], idx))[0]
 
     def joint(self, name):
         """Rest position of a MakeHuman joint helper, in world space."""
@@ -366,7 +371,40 @@ def build_human(name, base_targets, sliders, values, skin, outline, location=(0,
     add_outline(body, outline_width, outline)
     rig.location = location
     bpy.context.view_layer.update()
-    return Human(body, rig, final)
+    return Human(body, rig, final, used)
+
+
+def add_glute_bones(h, radius=0.13):
+    """Extra bones inside each butt cheek, skinned with a soft falloff, for impact jiggle."""
+    rig, body, final, used = h.rig, h.body, h.final, h.used
+    pelvis = Vector(final[D["joint:pelvis"]].mean(0))
+    co = final[used]
+    deselect_all()
+    bpy.context.view_layer.objects.active = rig
+    rig.select_set(True)
+    bpy.ops.object.mode_set(mode="EDIT")
+    centers = {}
+    for s, side in (("L", 1), ("R", -1)):
+        m = (side * co[:, 0] > 0.02) & (co[:, 1] > pelvis.y + 0.02) & \
+            (np.abs(co[:, 2] - (pelvis.z - 0.06)) < 0.12)
+        pts = co[m]
+        w = (pts[:, 1] - pts[:, 1].min()) ** 3              # bias toward the most rounded part
+        c = (pts * w[:, None]).sum(0) / w.sum()
+        centers[s] = c
+        b = rig.data.edit_bones.new(f"glute.{s}")
+        b.head = Vector((c[0], c[1] - 0.07, c[2]))
+        b.tail = Vector((c[0], c[1] + 0.02, c[2]))
+        b.parent = rig.data.edit_bones["hips"]
+    bpy.ops.object.mode_set(mode="OBJECT")
+    for s, c in centers.items():
+        dist = np.linalg.norm(co - c, axis=1)
+        w = np.clip(1 - dist / radius, 0, 1) ** 1.5
+        w[co[:, 1] < pelvis.y - 0.02] = 0                   # back side only
+        w[np.sign(co[:, 0]) != (1 if s == "L" else -1)] *= 0.3
+        vg = body.vertex_groups.new(name=f"glute.{s}")
+        for vi in np.where(w > 0.01)[0].tolist():
+            vg.add([vi], float(w[vi]) * 1.5, "REPLACE")
+    bpy.context.view_layer.update()
 
 
 def _vertex_normals(co, quads):
@@ -526,6 +564,32 @@ class Rig:
         r = Matrix.Rotation(math.radians(deg), 4, axis)
         pb.matrix = Matrix.Translation(pivot) @ r @ Matrix.Translation(-pivot) @ m
         self.update()
+
+    def rotate_axis(self, bone, axis, radians):
+        """Rotate a bone around its head about an arbitrary world-space axis vector."""
+        pb = self.pb(bone)
+        m = pb.matrix.copy()
+        pivot = m.translation.copy()
+        r = Matrix.Rotation(radians, 4, Vector(axis).normalized())
+        pb.matrix = Matrix.Translation(pivot) @ r @ Matrix.Translation(-pivot) @ m
+        self.update()
+
+    def level_palm(self, side_letter, down=(0, 0, -1)):
+        """Twist a hand around its own length so the palm faces `down`."""
+        hand = f"hand.{side_letter}"
+        side = 1 if side_letter == "L" else -1
+        d = (self.tail(hand) - self.head(hand)).normalized()
+        across = self.head(f"finger5_1.{side_letter}") - self.head(f"finger2_1.{side_letter}")
+        across = (across - d * across.dot(d)).normalized()
+        palm = -side * d.cross(across)                  # current palm direction
+        want = Vector(down) - d * Vector(down).dot(d)
+        if want.length < 1e-6:
+            return
+        want.normalize()
+        angle = palm.angle(want)
+        if d.dot(palm.cross(want)) < 0:
+            angle = -angle
+        self.rotate_axis(hand, d, angle)
 
     def shift(self, bone, offset):
         pb = self.pb(bone)
