@@ -1,7 +1,6 @@
 // MediaPipe hand landmark indices and topology.
 export const THUMB_TIP = 4;
 export const INDEX_TIP = 8;
-export const FINGERTIPS = [4, 8, 12, 16, 20];
 export const PALM = [0, 5, 9, 13, 17];
 export const HAND_BONES = [
   [0, 1], [1, 2], [2, 3], [3, 4],

@@ -1,15 +1,17 @@
 import * as THREE from 'three';
-import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 import { PointFilter } from './oneEuro.js';
-import { THUMB_TIP, INDEX_TIP } from './landmarks.js';
+import { THUMB_TIP, INDEX_TIP, PALM } from './landmarks.js';
 
-const WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm';
+const VISION = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1';
 const MODEL_URL =
   'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+// Lower than MediaPipe's defaults so a hand turned edge-on keeps tracking.
+const THRESHOLDS = { minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.35, minTrackingConfidence: 0.35 };
+const DETECT_LONG_SIDE = 640; // frames are shrunk to this before tracking; the model works at ~224 px anyway
 
-const LOST_AFTER_MS = 250;
-const PINCH_ON = 0.028; // metres between thumb tip and index tip
-const PINCH_OFF = 0.045;
+const LOST_AFTER_MS = 500; // keep a hand (coasting on its last motion) this long after losing it
+const LEAD = 0.012; // extra prediction for display latency, seconds
+const MAX_PREDICT = 0.12;
 
 export class CameraError extends Error {
   constructor(code, message) {
@@ -32,12 +34,7 @@ export async function openCamera(video) {
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: {
-        facingMode: 'user',
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-        frameRate: { ideal: 60, max: 60 },
-      },
+      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } },
     });
   } catch (err) {
     const name = err?.name;
@@ -62,50 +59,176 @@ export async function openCamera(video) {
   return stream;
 }
 
-export async function createLandmarker() {
-  const fileset = await FilesetResolver.forVisionTasks(WASM_ROOT);
-  const options = (delegate) => ({
-    baseOptions: { modelAssetPath: MODEL_URL, delegate },
-    runningMode: 'VIDEO',
-    numHands: 2,
-    minHandDetectionConfidence: 0.6,
-    minHandPresenceConfidence: 0.5,
-    minTrackingConfidence: 0.5,
-  });
-  try {
-    return { landmarker: await HandLandmarker.createFromOptions(fileset, options('GPU')), delegate: 'GPU' };
-  } catch (err) {
-    console.warn('GPU delegate unavailable, falling back to CPU', err);
-    return { landmarker: await HandLandmarker.createFromOptions(fileset, options('CPU')), delegate: 'CPU' };
+function monotonic() {
+  let last = 0;
+  return () => (last = Math.max(performance.now(), last + 1));
+}
+
+/* ---------- Backends: a worker (preferred) or the main thread ---------- */
+
+class WorkerBackend {
+  static async create(delegate) {
+    const worker = new Worker(new URL('./trackerWorker.js', import.meta.url));
+    const backend = new WorkerBackend(worker, delegate);
+    try {
+      await backend._init();
+    } catch (err) {
+      worker.terminate();
+      throw err;
+    }
+    return backend;
+  }
+
+  constructor(worker, delegate) {
+    this.worker = worker;
+    this.delegate = delegate;
+    this.label = `${delegate} · worker`;
+    this.pending = null;
+    this.ts = monotonic();
+    worker.onmessage = (e) => this._message(e.data);
+  }
+
+  _init() {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => this._failed?.('The hand tracker took too long to load.'), 60000);
+      this._ready = () => {
+        clearTimeout(timer);
+        this._ready = this._failed = null;
+        resolve();
+      };
+      this._failed = (message) => {
+        clearTimeout(timer);
+        this._ready = this._failed = null;
+        reject(new Error(message));
+      };
+      this.worker.onerror = (e) => this._failed?.(e.message || 'The tracking worker failed to start.');
+      this.worker.postMessage({
+        type: 'init',
+        bundleUrl: `${VISION}/vision_bundle.js`,
+        wasmRoot: `${VISION}/wasm`,
+        modelUrl: MODEL_URL,
+        delegate: this.delegate,
+        thresholds: THRESHOLDS,
+      });
+    });
+  }
+
+  _message(m) {
+    if (m.type === 'ready') this._ready?.();
+    else if (m.type === 'error') {
+      if (this._failed) this._failed(m.message);
+      else console.warn('Hand tracker:', m.message);
+    } else if (m.type === 'result') {
+      const resolve = this.pending;
+      this.pending = null;
+      resolve?.(m.hands);
+    }
+  }
+
+  async detect(video) {
+    const scale = Math.min(1, DETECT_LONG_SIDE / Math.max(video.videoWidth, video.videoHeight));
+    const bitmap = await createImageBitmap(video, {
+      resizeWidth: Math.round(video.videoWidth * scale),
+      resizeHeight: Math.round(video.videoHeight * scale),
+      resizeQuality: 'low',
+    });
+    return new Promise((resolve) => {
+      this.pending = resolve;
+      this.worker.postMessage({ type: 'frame', bitmap, ts: this.ts() }, [bitmap]);
+    });
   }
 }
+
+function packResult(result) {
+  const handedness = result.handedness ?? result.handednesses ?? [];
+  return result.landmarks.map((lm, i) => {
+    const image = new Float32Array(63);
+    const world = new Float32Array(63);
+    const wl = result.worldLandmarks[i];
+    for (let j = 0; j < 21; j++) {
+      image.set([lm[j].x, lm[j].y, lm[j].z], j * 3);
+      world.set([wl[j].x, wl[j].y, wl[j].z], j * 3);
+    }
+    const cat = handedness[i]?.[0];
+    return { image, world, right: cat ? cat.categoryName === 'Right' : true, score: cat?.score ?? 0.5 };
+  });
+}
+
+class MainThreadBackend {
+  static async create() {
+    const { FilesetResolver, HandLandmarker } = await import('@mediapipe/tasks-vision');
+    const fileset = await FilesetResolver.forVisionTasks(`${VISION}/wasm`);
+    for (const delegate of ['GPU', 'CPU']) {
+      try {
+        const landmarker = await HandLandmarker.createFromOptions(fileset, {
+          baseOptions: { modelAssetPath: MODEL_URL, delegate },
+          runningMode: 'VIDEO',
+          numHands: 2,
+          ...THRESHOLDS,
+        });
+        return new MainThreadBackend(landmarker, delegate);
+      } catch (err) {
+        if (delegate === 'CPU') throw err;
+        console.warn('GPU delegate unavailable, falling back to CPU', err);
+      }
+    }
+    return null;
+  }
+
+  constructor(landmarker, delegate) {
+    this.landmarker = landmarker;
+    this.label = delegate;
+    this.ts = monotonic();
+  }
+
+  async detect(video) {
+    return packResult(this.landmarker.detectForVideo(video, this.ts()));
+  }
+}
+
+/**
+ * Loads MediaPipe in a worker, or on the main thread as a last resort.
+ * `prefer` is 'auto' (GPU, then CPU), 'gpu' or 'cpu'.
+ */
+async function createBackend(prefer = 'auto') {
+  const order = prefer === 'cpu' ? ['CPU', 'GPU'] : ['GPU', 'CPU'];
+  if (typeof Worker !== 'undefined' && typeof createImageBitmap === 'function') {
+    for (const delegate of order) {
+      try {
+        return await WorkerBackend.create(delegate);
+      } catch (err) {
+        console.warn(`Tracking worker (${delegate}) unavailable:`, err.message);
+      }
+    }
+  }
+  return MainThreadBackend.create();
+}
+
+export async function createTracker(video, prefer) {
+  return new Tracker(video, await createBackend(prefer));
+}
+
+/* ---------- Geometry ---------- */
 
 function det3(a, b, c, d, e, f, g, h, i) {
   return a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
 }
 
 /**
- * Places MediaPipe's metric hand in camera space.
- *
- * World landmarks are in metres with camera-aligned axes (x right, y down,
- * z away from the lens) and their origin at the hand's centre. Image landmarks
- * are normalised pixel positions. We look for the translation T that makes
- * every world[i] + T project onto image[i] through a pinhole camera:
- *
- *   Tx - a*Tz = a*Z - X,   Ty - b*Tz = b*Z - Y,   a = (u-cx)/f, b = (v-cy)/f
- *
- * 42 linear equations, 3 unknowns, solved through the normal equations.
- * Hand size comes from the model, so the camera's focal length sets the depth.
+ * Places MediaPipe's metric hand in camera space. World landmarks are in
+ * metres with camera-aligned axes (x right, y down, z away from the lens) and
+ * the origin at the hand's centre; image landmarks are normalised pixels.
+ * Finds T so every world[i] + T projects onto image[i] through a pinhole
+ * camera (42 linear equations, 3 unknowns, least squares).
  */
 export function solveTranslation(world, image, K) {
-  const n = world.length;
+  const n = 21;
   let sa = 0, sb = 0, sq = 0, r0 = 0, r1 = 0, r2 = 0;
   for (let i = 0; i < n; i++) {
-    const a = (image[i].x * K.width - K.cx) / K.f;
-    const b = (image[i].y * K.height - K.cy) / K.f;
-    const w = world[i];
-    const e0 = a * w.z - w.x;
-    const e1 = b * w.z - w.y;
+    const a = (image[i * 3] * K.width - K.cx) / K.f;
+    const b = (image[i * 3 + 1] * K.height - K.cy) / K.f;
+    const e0 = a * world[i * 3 + 2] - world[i * 3];
+    const e1 = b * world[i * 3 + 2] - world[i * 3 + 1];
     sa += a;
     sb += b;
     sq += a * a + b * b;
@@ -113,7 +236,6 @@ export function solveTranslation(world, image, K) {
     r1 += e1;
     r2 -= a * e0 + b * e1;
   }
-  // [n 0 -sa; 0 n -sb; -sa -sb sq] * T = r
   const D = det3(n, 0, -sa, 0, n, -sb, -sa, -sb, sq);
   if (Math.abs(D) < 1e-9) return null;
   const tx = det3(r0, 0, -sa, r1, n, -sb, r2, -sb, sq) / D;
@@ -123,33 +245,48 @@ export function solveTranslation(world, image, K) {
   return [tx, ty, tz];
 }
 
+const FINGERS = [
+  [5, 6, 7, 8],
+  [9, 10, 11, 12],
+  [13, 14, 15, 16],
+  [17, 18, 19, 20],
+];
+
 class HandSlot {
   constructor(id) {
     this.id = id;
     this.active = false;
     this.lastSeen = -Infinity;
+    this.confidence = 0;
     this.vote = 0;
     this.isRight = true; // anatomical hand, from MediaPipe's handedness
-    this.side = 'right'; // chirality of the hand as drawn (flips when mirrored)
-    // Joint offsets from the hand centre, and the centre itself. Depth is the
-    // noisiest axis, so it gets its own, stronger smoothing.
-    this.shapeFilter = new PointFilter(21, { minCutoff: 1.6, beta: 6 });
-    this.centerXY = new PointFilter(1, { minCutoff: 1.4, beta: 6 });
-    this.centerZ = new PointFilter(1, { minCutoff: 0.7, beta: 3 });
+    this.side = 'right'; // chirality as drawn (flips when the view is mirrored)
+    this.shapeFilter = new PointFilter(21, { minCutoff: 2.2, beta: 9 });
+    this.centerXY = new PointFilter(1, { minCutoff: 2.0, beta: 10 });
+    this.centerZ = new PointFilter(1, { minCutoff: 1.1, beta: 5 });
     this.center = new THREE.Vector3(); // camera space
-    this.joints = Array.from({ length: 21 }, () => new THREE.Vector3());
-    this.prevJoints = Array.from({ length: 21 }, () => new THREE.Vector3());
+    this.centerVel = new THREE.Vector3(); // camera space, m/s (z < 0 is toward the camera)
+    this.measured = Array.from({ length: 21 }, () => new THREE.Vector3());
     this.velocity = Array.from({ length: 21 }, () => new THREE.Vector3());
-    this.image = null;
+    this.joints = Array.from({ length: 21 }, () => new THREE.Vector3()); // predicted, world space
+    this.palm = new THREE.Vector3();
+    this.image = new Float32Array(63);
     this.handLength = 0;
-    this.depth = 0;
+    this.depth = 0.45;
+    // gestures
+    this.ext = [1, 1, 1, 1];
+    this.thumb = 1;
+    this.pinchRatio = 1;
     this.pinching = false;
-    this.justPinched = false;
-    this.pinchPoint = new THREE.Vector3();
-    this.pinchVelocity = new THREE.Vector3();
+    this.thumbUp = true;
+    this.pose = 'open';
+    this.grip = false;
+    this._candidate = 'open';
+    this._candidateCount = 0;
     this._packed = new Float32Array(63);
     this._xy = new Float32Array(3);
     this._z = new Float32Array(3);
+    this._prev = new THREE.Vector3();
   }
 
   resetCenter() {
@@ -157,9 +294,9 @@ class HandSlot {
     this.centerZ.reset();
   }
 
-  ingest(det, now, mirror, K) {
-    const fresh = now - this.lastSeen > LOST_AFTER_MS;
-    const dt = fresh ? 1 / 30 : THREE.MathUtils.clamp((now - this.lastSeen) / 1000, 1 / 240, 0.1);
+  ingest(det, at, mirror, K) {
+    const fresh = at - this.lastSeen > LOST_AFTER_MS;
+    const dt = fresh ? 1 / 30 : THREE.MathUtils.clamp((at - this.lastSeen) / 1000, 1 / 120, 0.1);
     if (fresh) {
       this.shapeFilter.reset();
       this.resetCenter();
@@ -167,24 +304,26 @@ class HandSlot {
       this.vote = det.right ? 1 : -1;
       this.pinching = false;
       this.handLength = 0;
+      this.ext = [1, 1, 1, 1];
+      this.thumb = 1;
+      this.pinchRatio = 1;
     }
 
-    // Handedness votes with hysteresis so one mislabelled frame can't flip the mesh.
     this.vote = this.vote * 0.85 + (det.right ? 1 : -1) * det.score * 0.15;
     if (this.isRight && this.vote < -0.25) this.isRight = false;
     else if (!this.isRight && this.vote > 0.25) this.isRight = true;
 
-    // Put each joint on the camera ray through its 2D landmark, at the depth
-    // the metric 3D model gives it. The model's own x/y are a few percent off
-    // the image, so this is what makes the 3D hand land exactly on the real one.
+    // Each joint goes on the camera ray through its pixel, at the depth the
+    // metric 3D model gives it, so the 3D hand lands exactly on the real one.
+    const { world, image } = det;
     const packed = this._packed;
     let cx = 0;
     let cy = 0;
     let cz = 0;
     for (let i = 0; i < 21; i++) {
-      const Z = det.world[i].z + det.T[2];
-      const X = ((det.image[i].x * K.width - K.cx) / K.f) * Z;
-      const Y = ((det.image[i].y * K.height - K.cy) / K.f) * Z;
+      const Z = world[i * 3 + 2] + det.T[2];
+      const X = ((image[i * 3] * K.width - K.cx) / K.f) * Z;
+      const Y = ((image[i * 3 + 1] * K.height - K.cy) / K.f) * Z;
       packed[i * 3] = X;
       packed[i * 3 + 1] = Y;
       packed[i * 3 + 2] = Z;
@@ -206,63 +345,130 @@ class HandSlot {
     this._z[2] = cz;
     const cxy = this.centerXY.filter(this._xy, dt);
     const T = [cxy[0], cxy[1], this.centerZ.filter(this._z, dt)[2]];
+    this._prev.copy(this.center);
     this.center.set(T[0], T[1], T[2]);
+    if (fresh) this.centerVel.set(0, 0, 0);
+    else this.centerVel.lerp(this._prev.subVectors(this.center, this._prev).divideScalar(dt), 0.4);
 
-    // Camera space (x right, y down, z forward) -> three.js (x right, y up, z back).
+    // Camera space (x right, y down, z forward) -> world (x right, y up, z back).
     // The selfie view mirrors x, which also swaps which mesh (left/right) fits.
     const mx = mirror ? -1 : 1;
     for (let i = 0; i < 21; i++) {
       const o = i * 3;
-      const j = this.joints[i];
-      this.prevJoints[i].copy(j);
-      j.set(mx * (shape[o] + T[0]), -(shape[o + 1] + T[1]), -(shape[o + 2] + T[2]));
-      if (fresh) {
-        this.prevJoints[i].copy(j);
-        this.velocity[i].set(0, 0, 0);
-      } else {
-        const v = this.velocity[i];
-        v.x += ((j.x - this.prevJoints[i].x) / dt - v.x) * 0.5;
-        v.y += ((j.y - this.prevJoints[i].y) / dt - v.y) * 0.5;
-        v.z += ((j.z - this.prevJoints[i].z) / dt - v.z) * 0.5;
+      const m = this.measured[i];
+      const v = this.velocity[i];
+      const nx = mx * (shape[o] + T[0]);
+      const ny = -(shape[o + 1] + T[1]);
+      const nz = -(shape[o + 2] + T[2]);
+      if (fresh) v.set(0, 0, 0);
+      else {
+        v.x += ((nx - m.x) / dt - v.x) * 0.45;
+        v.y += ((ny - m.y) / dt - v.y) * 0.45;
+        v.z += ((nz - m.z) / dt - v.z) * 0.45;
+        v.clampLength(0, 4);
       }
+      m.set(nx, ny, nz);
     }
     this.side = this.isRight !== mirror ? 'right' : 'left';
-
-    // Size and pinch come from the metric model directly, so they hold even
-    // before the camera's field of view is calibrated.
-    const w = det.world;
-    const seg = (a, b) => Math.hypot(w[a].x - w[b].x, w[a].y - w[b].y, w[a].z - w[b].z);
-    const length = seg(0, 9) + seg(9, 10) + seg(10, 11) + seg(11, 12);
-    this.handLength = this.handLength ? this.handLength + (length - this.handLength) * 0.15 : length;
     this.depth = T[2];
+    this._gestures(world, fresh);
+    this.image.set(image);
+    this.lastSeen = at;
+  }
 
-    const gap = seg(THUMB_TIP, INDEX_TIP);
-    const wasPinching = this.pinching;
-    if (!this.pinching && gap < PINCH_ON) this.pinching = true;
-    else if (this.pinching && gap > PINCH_OFF) this.pinching = false;
-    this.justPinched = this.pinching && !wasPinching;
-    this.pinchPoint.copy(this.joints[THUMB_TIP]).add(this.joints[INDEX_TIP]).multiplyScalar(0.5);
-    this.pinchVelocity.copy(this.velocity[THUMB_TIP]).add(this.velocity[INDEX_TIP]).multiplyScalar(0.5);
+  _gestures(w, fresh) {
+    const d = (a, b) =>
+      Math.hypot(w[a * 3] - w[b * 3], w[a * 3 + 1] - w[b * 3 + 1], w[a * 3 + 2] - w[b * 3 + 2]);
+    const palm = d(0, 9) || 0.08;
+    const length = palm + d(9, 10) + d(10, 11) + d(11, 12);
+    this.handLength = this.handLength ? this.handLength + (length - this.handLength) * 0.15 : length;
 
-    this.image = det.image;
-    this.lastSeen = now;
+    // Straightness of each finger: tip-to-knuckle over the bone lengths.
+    // Measured on the 3D model, so it holds however the hand is turned.
+    FINGERS.forEach(([m, p, dd, t], f) => {
+      const e = d(t, m) / (d(p, m) + d(dd, p) + d(t, dd));
+      this.ext[f] += (e - this.ext[f]) * 0.6;
+    });
+    // Thumb and pinch are measured against palm size, so hand size doesn't matter.
+    this.thumb += (d(THUMB_TIP, 10) / palm - this.thumb) * 0.6;
+    this.pinchRatio += (d(THUMB_TIP, INDEX_TIP) / palm - this.pinchRatio) * 0.6;
+
+    // Thresholds measured on MediaPipe's video mode: straight fingers read
+    // about 0.97, curled ones 0.5-0.7; the thumb reads ~0.9 raised, ~0.5 down.
+    const [index, middle, ring, pinky] = this.ext;
+    const gun = index > 0.82 && middle < 0.72 && (ring < 0.76 || pinky < 0.76);
+    const fist = index < 0.72 && middle < 0.72 && (ring < 0.76 || pinky < 0.76);
+    const extended = this.ext.filter((e) => e > 0.82).length;
+    const candidate = gun ? 'gun' : fist ? 'fist' : extended >= 3 ? 'open' : 'other';
+    if (candidate === this._candidate) this._candidateCount++;
+    else {
+      this._candidate = candidate;
+      this._candidateCount = 1;
+    }
+    if (fresh || this._candidateCount >= 2) this.pose = candidate;
+
+    this.pinching = this.pose !== 'gun' && this.pinchRatio < (this.pinching ? 0.45 : 0.3);
+    this.grip = this.pose === 'fist' || this.pinching;
+    // The hammer: thumb raised off the middle finger, or dropped onto it.
+    this.thumbUp = this.thumb > (this.thumbUp ? 0.62 : 0.78);
+  }
+
+  /** Extrapolate to the moment this frame reaches the screen. */
+  predict(now) {
+    const age = (now - this.lastSeen) / 1000;
+    this.active = age * 1000 < LOST_AFTER_MS;
+    this.confidence = age < 0.15 ? 1 : Math.max(0, 1 - (age - 0.15) / 0.35);
+    if (!this.active) return;
+    const lead = Math.min(age + LEAD, MAX_PREDICT);
+    this.palm.set(0, 0, 0);
+    for (let i = 0; i < 21; i++) this.joints[i].copy(this.measured[i]).addScaledVector(this.velocity[i], lead);
+    for (const i of PALM) this.palm.add(this.joints[i]);
+    this.palm.multiplyScalar(1 / PALM.length);
   }
 }
 
 export class Tracker {
-  constructor(video, landmarker, delegate) {
+  constructor(video, backend) {
     this.video = video;
-    this.landmarker = landmarker;
-    this.delegate = delegate;
+    this.backend = backend;
+    this.delegate = backend.label;
     this.fovDeg = 64; // across the long side of the frame
     this.mirror = true;
     this.slots = [new HandSlot(0), new HandSlot(1)];
     this.typicalDepth = 0.45;
     this.fps = 0;
+    this.results = 0; // increments with every tracking result
+    this._frame = 0;
+    this._sent = -1;
+    this._captureAt = 0;
+    this._busy = false;
+    this._count = 0;
+    this._windowStart = performance.now();
     this._lastVideoTime = -1;
-    this._lastTs = 0;
-    this._frames = 0;
-    this._fpsWindowStart = performance.now();
+    this._rvfcAt = -Infinity;
+    if (typeof video.requestVideoFrameCallback === 'function') {
+      const onFrame = (now, meta) => {
+        this._rvfcAt = performance.now();
+        this._lastVideoTime = video.currentTime;
+        this._frame++;
+        const capture = meta?.captureTime;
+        const t = performance.now();
+        this._captureAt = capture > t - 400 && capture <= t ? capture : now;
+        this._pump();
+        video.requestVideoFrameCallback(onFrame);
+      };
+      video.requestVideoFrameCallback(onFrame);
+    }
+  }
+
+  /** Swap the tracking engine (GPU or CPU) without stopping the game. */
+  async useEngine(prefer) {
+    const next = await createBackend(prefer);
+    const old = this.backend;
+    this.backend = next;
+    this.delegate = next.label;
+    old.worker?.terminate();
+    old.pending?.([]);
   }
 
   intrinsics() {
@@ -276,55 +482,80 @@ export class Tracker {
     return this.slots.filter((s) => s.active);
   }
 
-  /** Runs detection when the camera has a new frame. Returns true if it did. */
+  /** Call once per rendered frame: feeds the tracker and predicts every hand to `now`. */
   update(now) {
-    for (const s of this.slots) s.justPinched = false;
-    const v = this.video;
-    let fresh = false;
-    if (v.readyState >= 2 && v.currentTime !== this._lastVideoTime) {
-      this._lastVideoTime = v.currentTime;
-      const ts = Math.max(now, this._lastTs + 1);
-      this._lastTs = ts;
-      const result = this.landmarker.detectForVideo(v, ts);
-      this._ingest(result, now);
-      this._frames++;
-      fresh = true;
+    // Frame callbacks are the fast path; poll the clock if they stop arriving.
+    if (now - this._rvfcAt > 250 && this.video.currentTime !== this._lastVideoTime) {
+      this._lastVideoTime = this.video.currentTime;
+      this._frame++;
+      this._captureAt = now;
     }
-    const elapsed = now - this._fpsWindowStart;
-    if (elapsed > 1000) {
-      this.fps = (this._frames * 1000) / elapsed;
-      this._frames = 0;
-      this._fpsWindowStart = now;
+    this._pump();
+    for (const s of this.slots) s.predict(now);
+    if (now - this._windowStart > 1000) {
+      this.fps = (this._count * 1000) / (now - this._windowStart);
+      this._count = 0;
+      this._windowStart = now;
     }
-    for (const s of this.slots) s.active = now - s.lastSeen < LOST_AFTER_MS;
-    if (fresh) {
-      const live = this.hands;
-      if (live.length) {
-        const d = live.reduce((sum, h) => sum + h.depth, 0) / live.length;
-        this.typicalDepth += (THREE.MathUtils.clamp(d, 0.2, 1.2) - this.typicalDepth) * 0.03;
-      }
-    }
-    return fresh;
   }
 
-  /**
-   * True-scale calibration: with a hand held at a measured distance, solve for
-   * the focal length that puts it there. Returns the new field of view.
-   */
-  calibrate(distanceM) {
-    const hand = this.hands[0];
-    if (!hand || !(hand.depth > 0)) return null;
+  async _pump() {
+    if (this._busy || this._sent === this._frame || this.video.readyState < 2) return;
+    this._busy = true;
+    this._sent = this._frame;
+    const at = this._captureAt || performance.now();
+    try {
+      const hands = await this.backend.detect(this.video);
+      this._ingest(hands, at);
+      this._count++;
+      this.results++;
+    } catch (err) {
+      console.warn('Hand tracking frame failed', err);
+    } finally {
+      this._busy = false;
+    }
+    if (this._sent !== this._frame) this._pump();
+  }
+
+  _ingest(hands, at) {
     const K = this.intrinsics();
-    const f = (K.f * distanceM) / hand.depth;
-    const fov = THREE.MathUtils.radToDeg(2 * Math.atan(Math.max(K.width, K.height) / 2 / f));
-    this.setFov(THREE.MathUtils.clamp(fov, 30, 120));
-    return this.fovDeg;
+    const dets = [];
+    for (const h of hands) {
+      const T = solveTranslation(h.world, h.image, K);
+      if (T) dets.push({ ...h, T });
+    }
+    if (!dets.length) return;
+
+    // Keep each physical hand in the same slot (and filter state) frame to frame.
+    const [s0, s1] = this.slots;
+    const cost = (slot, det) => {
+      const labelPenalty = slot.isRight === det.right ? 0 : 0.05;
+      if (at - slot.lastSeen > LOST_AFTER_MS) return 0.5 + labelPenalty;
+      return Math.hypot(slot.center.x - det.T[0], slot.center.y - det.T[1], slot.center.z - det.T[2]) + labelPenalty;
+    };
+    if (dets.length === 1) {
+      (cost(s0, dets[0]) <= cost(s1, dets[0]) ? s0 : s1).ingest(dets[0], at, this.mirror, K);
+    } else {
+      const straight = cost(s0, dets[0]) + cost(s1, dets[1]);
+      const crossed = cost(s0, dets[1]) + cost(s1, dets[0]);
+      const [a, b] = straight <= crossed ? [dets[0], dets[1]] : [dets[1], dets[0]];
+      s0.ingest(a, at, this.mirror, K);
+      s1.ingest(b, at, this.mirror, K);
+    }
+    let sum = 0;
+    let n = 0;
+    for (const s of this.slots) {
+      if (s.lastSeen === at) {
+        sum += s.depth;
+        n++;
+      }
+    }
+    if (n) this.typicalDepth += (THREE.MathUtils.clamp(sum / n, 0.2, 1.2) - this.typicalDepth) * 0.03;
   }
 
   setMirror(on) {
     if (on === this.mirror) return;
     this.mirror = on;
-    // Joints jump to the other side of the screen; start each hand afresh.
     for (const s of this.slots) s.lastSeen = -Infinity;
   }
 
@@ -337,39 +568,14 @@ export class Tracker {
     for (const s of this.slots) s.resetCenter();
   }
 
-  _ingest(result, now) {
+  /** With a hand held at a measured distance, solve for the focal length that puts it there. */
+  calibrate(distanceM) {
+    const hand = this.hands[0];
+    if (!hand || !(hand.depth > 0)) return null;
     const K = this.intrinsics();
-    const handedness = result.handedness ?? result.handednesses ?? [];
-    const dets = [];
-    for (let i = 0; i < result.landmarks.length; i++) {
-      const T = solveTranslation(result.worldLandmarks[i], result.landmarks[i], K);
-      if (!T) continue;
-      const cat = handedness[i]?.[0];
-      dets.push({
-        image: result.landmarks[i],
-        world: result.worldLandmarks[i],
-        T,
-        right: cat ? cat.categoryName === 'Right' : true,
-        score: cat?.score ?? 0.5,
-      });
-    }
-    if (!dets.length) return;
-
-    // Keep each physical hand in the same slot (and filter state) frame to frame.
-    const [s0, s1] = this.slots;
-    const cost = (slot, det) => {
-      const labelPenalty = slot.isRight === det.right ? 0 : 0.05;
-      if (now - slot.lastSeen > LOST_AFTER_MS) return 0.5 + labelPenalty;
-      return Math.hypot(slot.center.x - det.T[0], slot.center.y - det.T[1], slot.center.z - det.T[2]) + labelPenalty;
-    };
-    if (dets.length === 1) {
-      (cost(s0, dets[0]) <= cost(s1, dets[0]) ? s0 : s1).ingest(dets[0], now, this.mirror, K);
-    } else {
-      const straight = cost(s0, dets[0]) + cost(s1, dets[1]);
-      const crossed = cost(s0, dets[1]) + cost(s1, dets[0]);
-      const [a, b] = straight <= crossed ? [dets[0], dets[1]] : [dets[1], dets[0]];
-      s0.ingest(a, now, this.mirror, K);
-      s1.ingest(b, now, this.mirror, K);
-    }
+    const f = (K.f * distanceM) / hand.depth;
+    const fov = THREE.MathUtils.radToDeg(2 * Math.atan(Math.max(K.width, K.height) / 2 / f));
+    this.setFov(THREE.MathUtils.clamp(fov, 30, 120));
+    return this.fovDeg;
   }
 }

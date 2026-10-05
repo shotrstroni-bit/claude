@@ -128,31 +128,32 @@ export function createHandMaterials() {
     0.35,
     2.6,
   );
-  const holo = addRim(
+  // Spectral wizard hands: see-through, so they never hide the arena.
+  const spectral = addRim(
     new THREE.MeshStandardMaterial({
-      color: '#0a2a33',
-      emissive: '#0f3a44',
+      color: '#1a1036',
+      emissive: '#3b1f7a',
       roughness: 0.35,
       transparent: true,
-      opacity: 0.55,
+      opacity: 0.38,
       depthWrite: false,
     }),
-    '#7fd6e8',
-    1.4,
-    2.0,
+    '#8be9ff',
+    1.6,
+    2.2,
   );
   const wire = new THREE.MeshBasicMaterial({
-    color: '#7fd6e8',
+    color: '#b48cff',
     wireframe: true,
     transparent: true,
-    opacity: 0.22,
+    opacity: 0.16,
     depthWrite: false,
   });
   const bone = new THREE.MeshStandardMaterial({ color: '#ece6da', roughness: 0.4, metalness: 0.05 });
   const points = new THREE.MeshBasicMaterial({ color: '#ffb04a', depthTest: false, transparent: true });
   return {
     skin,
-    holo,
+    spectral,
     wire,
     bone,
     points,
@@ -313,8 +314,8 @@ export class HandAvatar {
     this.skeleton = new SkeletonModel(materials.bone, 0.8);
     this.overlay = new SkeletonModel(materials.points, 0.3);
     this.group.add(this.skeleton.root, this.overlay.root);
-    this.look = 'skin';
-    this.setLook('skin');
+    this.look = 'spectral';
+    this.setLook('spectral');
   }
 
   get hasMesh() {
@@ -324,7 +325,7 @@ export class HandAvatar {
   setLook(look) {
     this.look = this.hasMesh ? look : 'skeleton';
     for (const model of Object.values(this.models)) {
-      if (this.look === 'holo') model.setMaterial(this.materials.holo, true);
+      if (this.look === 'spectral') model.setMaterial(this.materials.spectral, true);
       else model.setMaterial(this.materials.skin, false);
     }
   }

@@ -1,11 +1,14 @@
+import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { Stage } from './scene.js';
+import { Arena } from './world/arena.js';
+import { PropSystem } from './world/props.js';
+import { EnemySystem } from './world/enemies.js';
+import { HexGame } from './game/hexslinger.js';
 import { HandAvatar, createHandMaterials, SKIN_TONES } from './handRig.js';
-import { DemoHand } from './demoHand.js';
 import { Effects } from './fx.js';
 import { Sfx } from './audio.js';
-import { PopGame } from './game/pop.js';
-import { SandboxGame } from './game/sandbox.js';
+import { Revolver } from './revolver/revolver.js';
 import { HAND_BONES } from './landmarks.js';
 
 const $ = (id) => document.getElementById(id);
@@ -14,62 +17,65 @@ const video = $('cam');
 
 /* ---------- Settings ---------- */
 
-const DEFAULTS = { mode: 'pop', backdrop: 'studio', look: 'skin', tone: 2, mirror: true, joints: false, sound: true, fov: 64 };
+const DEFAULTS = { look: 'spectral', tone: 2, mirror: true, joints: false, sound: true, pip: true, quality: 'auto', engine: 'auto', fov: 64 };
 const settings = (() => {
   try {
-    return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('handspace.settings') || '{}') };
+    return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('hexslinger.settings') || '{}') };
   } catch {
     return { ...DEFAULTS };
   }
 })();
 function saveSettings() {
   try {
-    localStorage.setItem('handspace.settings', JSON.stringify(settings));
+    localStorage.setItem('hexslinger.settings', JSON.stringify(settings));
   } catch {
     /* storage unavailable: settings last for this visit only */
   }
 }
 
-/* ---------- Scene ---------- */
+/* ---------- World ---------- */
 
 const stage = new Stage($('scene'));
+const arena = new Arena(stage.scene);
 const fx = new Effects(stage.scene);
 const sfx = new Sfx();
 sfx.enabled = settings.sound;
+const props = new PropSystem(stage.scene, fx, sfx);
+const enemies = new EnemySystem(stage.scene, fx, sfx);
 const materials = createHandMaterials();
 
 let assets = { left: null, right: null };
 try {
   const loader = new GLTFLoader();
-  const [left, right] = await Promise.all([
-    loader.loadAsync('assets/hands/left.glb'),
-    loader.loadAsync('assets/hands/right.glb'),
-  ]);
+  const [left, right] = await Promise.all([loader.loadAsync('assets/hands/left.glb'), loader.loadAsync('assets/hands/right.glb')]);
   assets = { left: left.scene, right: right.scene };
 } catch (err) {
   console.warn('Hand meshes did not load; showing the joint skeleton instead.', err);
 }
-
 const avatars = [0, 1].map(() => new HandAvatar(assets, materials));
-const demoAvatar = new HandAvatar(assets, materials);
-for (const a of [...avatars, demoAvatar]) {
+for (const a of avatars) {
   a.group.visible = false;
   stage.scene.add(a.group);
 }
-const demo = new DemoHand();
 
-// Beside the intro card on wide screens, above it on phones.
-function placeDemo() {
-  const wide = stage.width > 720;
-  const depth = wide ? 0.42 : 0.95;
-  stage.pointAt(wide ? 0.36 : 0, wide ? -0.34 : 0.36, depth, demo.anchor);
-  if (!tracker) stage.setRoomDepth(depth);
-}
-/* ---------- UI used by the game modes ---------- */
+/* ---------- The showcase revolver (title screen and armory) ---------- */
+
+const showcase = new Revolver();
+const holder = new THREE.Group();
+showcase.root.position.set(-0.029, 0.055, 0); // turn about the gun's middle
+holder.add(showcase.root);
+stage.scene.add(holder);
+// Short-range studio lights that reach the revolver but not the courtyard.
+const keyLight = new THREE.PointLight('#fff2e2', 2.2, 1.1, 2);
+const rimLight = new THREE.PointLight('#9ec8ff', 1.6, 1.1, 2);
+stage.scene.add(keyLight, rimLight);
+const view = { yaw: Math.PI, pitch: 0.12, dragging: false, lastX: 0, lastY: 0, auto: true };
+
+/* ---------- HUD used by the game ---------- */
 
 let gameHint = null;
 let gameHintUntil = 0;
-let centerTimer = 0;
+let bannerTimer = 0;
 
 const ui = {
   setScore(score, mult = 1) {
@@ -79,40 +85,51 @@ const ui = {
     $('mult').hidden = mult <= 1;
     $('mult').textContent = `×${mult} streak`;
   },
-  setTimer(seconds) {
-    const el = $('timer');
-    el.hidden = seconds === null;
-    if (seconds === null) return;
-    const s = Math.ceil(seconds);
-    el.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-    el.classList.toggle('low', s <= 10);
+  setWave(n) {
+    $('wave').hidden = !n;
+    $('wave').textContent = `Wave ${n}`;
   },
-  center(text, holdMs = 900) {
-    const el = $('centerMsg');
-    clearTimeout(centerTimer);
-    if (!text) {
-      el.hidden = true;
-      return;
-    }
+  setLives(n) {
+    $('lives').hidden = false;
+    [...$('lives').children].forEach((el, i) => el.classList.toggle('lost', i >= n));
+    $('lives').setAttribute('aria-label', `${n} lives left`);
+  },
+  setAmmo(rounds) {
+    const el = $('ammo');
+    el.hidden = !rounds;
+    if (!rounds) return;
+    const key = rounds.join();
+    if (el.dataset.key === key) return;
+    el.dataset.key = key;
+    [...el.children].forEach((r, i) => (r.className = rounds[i]));
+  },
+  banner(text) {
+    const el = $('banner');
     el.textContent = text;
     el.hidden = false;
     el.style.animation = 'none';
     void el.offsetWidth; // restart the CSS animation
     el.style.animation = '';
-    centerTimer = setTimeout(() => (el.hidden = true), holdMs);
+    clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(() => (el.hidden = true), 1700);
   },
   hint(text, holdMs = 0) {
     gameHint = text;
     gameHintUntil = holdMs ? performance.now() + holdMs : Infinity;
+  },
+  hurt() {
+    const el = $('hurt');
+    el.classList.remove('on');
+    void el.offsetWidth;
+    el.classList.add('on');
   },
   showResults(stats) {
     $('results').hidden = !stats;
     if (!stats) return;
     $('finalScore').textContent = stats.score.toLocaleString();
     $('newBest').hidden = !stats.newBest;
-    $('stPops').textContent = stats.pops;
-    $('stGold').textContent = stats.golds;
-    $('stCombo').textContent = stats.bestCombo;
+    $('stWave').textContent = stats.wave;
+    $('stKills').textContent = stats.kills;
     $('stBest').textContent = stats.best.toLocaleString();
   },
 };
@@ -126,66 +143,192 @@ function toast(text) {
   toastTimer = setTimeout(() => (el.hidden = true), 3200);
 }
 
-/* ---------- Game modes ---------- */
+const game = new HexGame({ stage, props, enemies, fx, sfx, ui });
 
+// Showcase sounds and effects
+showcase
+  .on('cock', () => sfx.cock())
+  .on('trigger', () => sfx.trigger())
+  .on('decock', () => sfx.decock())
+  .on('latch', () => sfx.latch())
+  .on('swing-out', () => sfx.swingOut())
+  .on('load', () => sfx.load())
+  .on('swing-in', () => sfx.swingIn())
+  .on('spin', () => sfx.spin())
+  .on('dry', () => sfx.dry())
+  .on('eject', (cases) => {
+    sfx.eject();
+    game.spawnCasings(showcase, cases);
+  })
+  .on('shot', () => {
+    sfx.gunshot();
+    const dir = new THREE.Vector3();
+    const muzzle = showcase.muzzle(new THREE.Vector3(), dir);
+    fx.flash(muzzle, '#ffc070', 6, 0.06);
+    fx.puff(muzzle, dir, 0.03);
+    fx.puff(muzzle, dir, 0.045);
+    fx.burst(muzzle, '#ffcf7a', 14, 5, 0.15);
+  });
+
+/* ---------- Modes: title, armory, game ---------- */
+
+let mode = 'title';
 let tracker = null;
-const context = { stage, fx, sfx, ui, getDepth: () => tracker?.typicalDepth ?? 0.45 };
-const games = { pop: new PopGame(context), sandbox: new SandboxGame(context) };
-let game = null;
-placeDemo();
 
-function syncPressed(attr, value) {
-  for (const b of document.querySelectorAll(`[${attr}]`)) {
-    b.setAttribute('aria-pressed', String(b.getAttribute(attr) === value));
+function setMode(next) {
+  mode = next;
+  app.dataset.mode = next;
+  $('intro').hidden = next !== 'title';
+  $('armory').hidden = next !== 'armory';
+  const showGun = next !== 'game';
+  holder.visible = showGun;
+  keyLight.visible = rimLight.visible = showGun;
+  view.auto = next === 'title';
+  placeShowcase();
+  if (next === 'armory') {
+    view.yaw = Math.PI;
+    view.pitch = 0.08;
   }
 }
 
-function setMode(mode) {
-  settings.mode = mode;
-  saveSettings();
-  app.dataset.mode = mode;
-  syncPressed('data-set-mode', mode);
-  if (!tracker || game === games[mode]) return;
-  game?.exit();
-  game = games[mode];
-  game.enter();
+function placeShowcase() {
+  const wide = stage.width > 760;
+  // Beside the card on wide screens; in the open space above it on phones.
+  if (wide) holder.position.set(mode === 'armory' ? 0.13 : 0.11, mode === 'armory' ? -0.01 : -0.02, mode === 'armory' ? -0.62 : -0.5);
+  else holder.position.set(0, 0.21, -1.0);
+  keyLight.position.copy(holder.position).add(new THREE.Vector3(0.22, 0.28, 0.32));
+  rimLight.position.copy(holder.position).add(new THREE.Vector3(-0.3, 0.18, -0.3));
 }
 
-function setBackdrop(backdrop) {
-  settings.backdrop = backdrop;
-  saveSettings();
-  app.dataset.backdrop = backdrop;
-  syncPressed('data-set-backdrop', backdrop);
-  stage.setBackdrop(tracker ? backdrop : 'studio');
+function setStatus(text, error = false) {
+  const el = $('introStatus');
+  el.textContent = text;
+  el.classList.toggle('error', error);
 }
 
-/* ---------- Hand look ---------- */
+async function start() {
+  sfx.unlock();
+  setMode('title');
+  const buttons = document.querySelectorAll('#startBtn, #armoryStart');
+  buttons.forEach((b) => (b.disabled = true));
+  setStatus('Opening the camera…');
+  let cameraOpen = false;
+  try {
+    const { openCamera, createTracker } = await import('./tracker.js');
+    if (video.srcObject) video.srcObject.getTracks().forEach((t) => t.stop());
+    await openCamera(video);
+    cameraOpen = true;
+    setStatus('Loading the hand tracker. The first visit downloads about 8 MB…');
+    tracker = await createTracker(video, settings.engine);
+    tracker.setMirror(settings.mirror);
+    tracker.setFov(settings.fov);
+    stage.setCameraModel(video.videoWidth, video.videoHeight, settings.fov);
+    setMode('game');
+    app.dataset.live = 'true';
+    ui.setLives(3);
+    game.start();
+  } catch (err) {
+    console.error(err);
+    const message = err?.code
+      ? err.message
+      : cameraOpen
+        ? 'The hand tracker could not load. Check your internet connection and press Start again.'
+        : `Something went wrong: ${err?.message || err}`;
+    setStatus(message, true);
+    buttons.forEach((b) => (b.disabled = false));
+  }
+}
+
+/* ---------- Armory controls ---------- */
+
+const gunActions = {
+  cock: () => showcase.cock(),
+  fire: () => showcase.pullTrigger(),
+  open: () => showcase.setOpen(!showcase.open),
+  spin: () => (showcase.open ? showcase.spinCylinder() : showcase.setOpen(true)),
+  reload: () => showcase.reload(),
+};
+for (const b of document.querySelectorAll('[data-gun]')) {
+  b.addEventListener('click', () => {
+    sfx.unlock();
+    gunActions[b.dataset.gun]();
+  });
+}
+const KEYS = { c: 'cock', ' ': 'fire', o: 'open', s: 'spin', r: 'reload' };
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (!$('settings').hidden) setDrawer(false);
+    else if (mode === 'armory') setMode('title');
+    return;
+  }
+  if (mode !== 'armory' || e.target.closest('input')) return;
+  const action = KEYS[e.key.toLowerCase()];
+  if (action) {
+    e.preventDefault();
+    sfx.unlock();
+    gunActions[action]();
+  }
+});
+
+const canvas = $('scene');
+canvas.addEventListener('pointerdown', (e) => {
+  if (mode === 'game') return;
+  view.dragging = true;
+  view.auto = false;
+  view.lastX = e.clientX;
+  view.lastY = e.clientY;
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (!view.dragging) return;
+  view.yaw += (e.clientX - view.lastX) * 0.01;
+  view.pitch = THREE.MathUtils.clamp(view.pitch + (e.clientY - view.lastY) * 0.01, -1.2, 1.2);
+  view.lastX = e.clientX;
+  view.lastY = e.clientY;
+});
+canvas.addEventListener('pointerup', () => (view.dragging = false));
+canvas.addEventListener('pointercancel', () => (view.dragging = false));
+
+$('startBtn').addEventListener('click', start);
+$('armoryStart').addEventListener('click', start);
+$('armoryBtn').addEventListener('click', () => {
+  sfx.unlock();
+  setMode('armory');
+});
+$('armoryBack').addEventListener('click', () => setMode('title'));
+
+/* ---------- Settings drawer ---------- */
+
+function setDrawer(open) {
+  $('settings').hidden = !open;
+  $('settingsBtn').setAttribute('aria-expanded', String(open));
+  if (open) $('settingsClose').focus();
+  else $('settingsBtn').focus();
+}
+$('settingsBtn').addEventListener('click', () => setDrawer($('settings').hidden));
+$('settingsClose').addEventListener('click', () => setDrawer(false));
 
 function buildSwatches() {
   const wrap = $('swatches');
-  SKIN_TONES.forEach((hex, i) => {
+  const add = (label, look, tone, color) => {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'swatch';
-    b.style.background = hex;
-    b.setAttribute('role', 'radio');
-    b.setAttribute('aria-label', `Skin tone ${i + 1}`);
-    b.dataset.look = 'skin';
-    b.dataset.tone = String(i);
-    wrap.append(b);
-  });
-  for (const [look, label] of [
-    ['holo', 'Hologram'],
-    ['skeleton', 'Joints only'],
-  ]) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'swatch text';
-    b.textContent = label;
     b.setAttribute('role', 'radio');
     b.dataset.look = look;
+    if (tone !== undefined) b.dataset.tone = String(tone);
+    if (color) {
+      b.className = 'swatch';
+      b.style.background = color;
+      b.setAttribute('aria-label', label);
+    } else {
+      b.className = 'swatch text';
+      b.textContent = label;
+    }
     wrap.append(b);
-  }
+  };
+  add('Spectral', 'spectral');
+  SKIN_TONES.forEach((hex, i) => add(`Skin tone ${i + 1}`, 'skin', i, hex));
+  add('Joints only', 'skeleton');
   wrap.addEventListener('click', (e) => {
     const b = e.target.closest('[data-look]');
     if (!b) return;
@@ -198,101 +341,62 @@ function buildSwatches() {
 
 function applyLook() {
   materials.setTone(SKIN_TONES[settings.tone] ?? SKIN_TONES[2]);
-  for (const a of [...avatars, demoAvatar]) a.setLook(settings.look);
+  for (const a of avatars) a.setLook(settings.look);
   for (const b of $('swatches').children) {
     const on = b.dataset.look === settings.look && (settings.look !== 'skin' || Number(b.dataset.tone) === settings.tone);
     b.setAttribute('aria-checked', String(on));
   }
 }
 
-/* ---------- Starting the camera ---------- */
-
-function setStatus(text, error = false) {
-  const el = $('introStatus');
-  el.textContent = text;
-  el.classList.toggle('error', error);
+function applyQuality(q) {
+  settings.quality = q;
+  stage.setQuality(q);
+  arena.setShadows(q !== 'low');
+  for (const b of document.querySelectorAll('[data-quality]')) b.setAttribute('aria-pressed', String(b.dataset.quality === q));
 }
-
-async function start(mode) {
-  sfx.unlock();
-  const buttons = document.querySelectorAll('[data-start]');
-  buttons.forEach((b) => (b.disabled = true));
-  setStatus('Opening the camera…');
-  let stage1Done = false;
-  try {
-    const { openCamera, createLandmarker, Tracker } = await import('./tracker.js');
-    if (video.srcObject) video.srcObject.getTracks().forEach((t) => t.stop());
-    await openCamera(video);
-    stage1Done = true;
-    setStatus('Loading the hand tracker. The first visit downloads about 8 MB…');
-    const { landmarker, delegate } = await createLandmarker();
-    tracker = new Tracker(video, landmarker, delegate);
-    tracker.setMirror(settings.mirror);
-    tracker.setFov(settings.fov);
-    video.classList.toggle('mirrored', settings.mirror);
-    stage.setCameraModel(video.videoWidth, video.videoHeight, settings.fov);
-    $('intro').hidden = true;
-    app.dataset.live = 'true';
-    demoAvatar.group.visible = false;
-    setBackdrop(settings.backdrop);
-    setMode(mode);
-  } catch (err) {
-    console.error(err);
-    const message = err?.code
-      ? err.message
-      : stage1Done
-        ? 'The hand tracker could not load. Check your internet connection and press Start again.'
-        : `Something went wrong: ${err?.message || err}`;
-    setStatus(message, true);
-    buttons.forEach((b) => (b.disabled = false));
-  }
-}
-
-/* ---------- Wiring ---------- */
 
 buildSwatches();
 applyLook();
-setBackdrop(settings.backdrop);
-syncPressed('data-set-mode', settings.mode);
+applyQuality(settings.quality);
 $('optMirror').checked = settings.mirror;
 $('optJoints').checked = settings.joints;
 $('optSound').checked = settings.sound;
-$('optFov').value = String(settings.fov);
-$('fovOut').textContent = `${settings.fov}°`;
+$('optPip').checked = settings.pip;
+$('optFov').value = String(Math.round(settings.fov));
+$('fovOut').textContent = `${Math.round(settings.fov)}°`;
+app.dataset.pip = String(settings.pip);
 
-for (const b of document.querySelectorAll('[data-start]')) {
-  b.addEventListener('click', () => start(b.dataset.start));
+function syncEngine() {
+  for (const b of document.querySelectorAll('[data-engine]')) b.setAttribute('aria-pressed', String(b.dataset.engine === settings.engine));
 }
-document.addEventListener('click', (e) => {
-  const modeBtn = e.target.closest('[data-set-mode]');
-  if (modeBtn) {
-    sfx.unlock();
-    setMode(modeBtn.dataset.setMode);
+syncEngine();
+
+document.addEventListener('click', async (e) => {
+  const q = e.target.closest('[data-quality]');
+  if (q) {
+    applyQuality(q.dataset.quality);
+    saveSettings();
   }
-  const backdropBtn = e.target.closest('[data-set-backdrop]');
-  if (backdropBtn) setBackdrop(backdropBtn.dataset.setBackdrop);
+  const engine = e.target.closest('[data-engine]');
+  if (engine && engine.dataset.engine !== settings.engine) {
+    settings.engine = engine.dataset.engine;
+    saveSettings();
+    syncEngine();
+    if (tracker) {
+      toast('Switching the hand tracker…');
+      try {
+        await tracker.useEngine(settings.engine);
+        toast(`Hand tracker: ${tracker.delegate}`);
+      } catch (err) {
+        toast('That tracker could not start on this device.');
+        console.error(err);
+      }
+    }
+  }
 });
-$('againBtn').addEventListener('click', () => {
-  sfx.unlock();
-  games.pop.restart();
-});
-
-function setDrawer(open) {
-  $('settings').hidden = !open;
-  $('settingsBtn').setAttribute('aria-expanded', String(open));
-  if (open) $('settingsClose').focus();
-  else $('settingsBtn').focus();
-}
-$('settingsBtn').addEventListener('click', () => setDrawer($('settings').hidden));
-$('settingsClose').addEventListener('click', () => setDrawer(false));
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !$('settings').hidden) setDrawer(false);
-});
-
 $('optMirror').addEventListener('change', (e) => {
   settings.mirror = e.target.checked;
   saveSettings();
-  video.classList.toggle('mirrored', settings.mirror);
   tracker?.setMirror(settings.mirror);
 });
 $('optJoints').addEventListener('change', (e) => {
@@ -303,6 +407,12 @@ $('optSound').addEventListener('change', (e) => {
   settings.sound = e.target.checked;
   sfx.enabled = settings.sound;
   if (settings.sound) sfx.unlock();
+  else sfx.hold(0);
+  saveSettings();
+});
+$('optPip').addEventListener('change', (e) => {
+  settings.pip = e.target.checked;
+  app.dataset.pip = String(settings.pip);
   saveSettings();
 });
 
@@ -337,16 +447,19 @@ $('calBtn').addEventListener('click', () => {
 
 window.addEventListener('resize', () => {
   stage.resize();
-  placeDemo();
+  if (tracker) stage.setCameraModel(video.videoWidth, video.videoHeight, settings.fov);
+  placeShowcase();
 });
 
 /* ---------- Camera thumbnail ---------- */
 
 const pip = $('pip');
 const pipCtx = pip.getContext('2d');
+let pipDrawn = -1;
 
 function drawPip() {
-  if (!tracker || settings.backdrop === 'camera') return;
+  if (!tracker || !settings.pip || tracker.results === pipDrawn) return;
+  pipDrawn = tracker.results;
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   if (!vw) return;
@@ -359,25 +472,18 @@ function drawPip() {
     pipCtx.scale(-1, 1);
   }
   pipCtx.drawImage(video, 0, 0, w, h);
-  pipCtx.fillStyle = 'rgba(12, 19, 23, 0.3)';
+  pipCtx.fillStyle = 'rgba(11, 10, 23, 0.3)';
   pipCtx.fillRect(0, 0, w, h);
   for (const hand of tracker.hands) {
     const lm = hand.image;
-    if (!lm) continue;
-    pipCtx.strokeStyle = '#7fd6e8';
+    pipCtx.strokeStyle = hand.pose === 'gun' ? '#e2b45c' : hand.grip ? '#8be9ff' : '#b48cff';
     pipCtx.lineWidth = 1.5;
     pipCtx.beginPath();
     for (const [a, b] of HAND_BONES) {
-      pipCtx.moveTo(lm[a].x * w, lm[a].y * h);
-      pipCtx.lineTo(lm[b].x * w, lm[b].y * h);
+      pipCtx.moveTo(lm[a * 3] * w, lm[a * 3 + 1] * h);
+      pipCtx.lineTo(lm[b * 3] * w, lm[b * 3 + 1] * h);
     }
     pipCtx.stroke();
-    pipCtx.fillStyle = '#ffb04a';
-    for (const p of lm) {
-      pipCtx.beginPath();
-      pipCtx.arc(p.x * w, p.y * h, 2, 0, Math.PI * 2);
-      pipCtx.fill();
-    }
   }
   pipCtx.restore();
 }
@@ -388,11 +494,11 @@ let last = performance.now();
 let lastReadout = 0;
 let lastHandsAt = performance.now();
 
-function updateHint(now, hands) {
+function updateHint(now) {
   let text = null;
-  if (tracker) {
-    if (hands.length) lastHandsAt = now;
-    if (now - lastHandsAt > 1200) text = 'Show your hands to the camera, about an arm’s length away.';
+  if (mode === 'game') {
+    if (tracker.hands.length) lastHandsAt = now;
+    if (now - lastHandsAt > 1500) text = 'Show your hands to the camera, 30–60 cm away, lit from the front.';
     else if (gameHint && now < gameHintUntil) text = gameHint;
   }
   const el = $('hint');
@@ -401,39 +507,49 @@ function updateHint(now, hands) {
 }
 
 function updateReadouts() {
-  const hand = tracker.hands[0];
-  $('roLen').textContent = hand ? `${(hand.handLength * 100).toFixed(1)} cm` : '–';
-  $('roDist').textContent = hand ? `${(hand.depth * 100).toFixed(0)} cm` : '–';
-  $('roFps').textContent = `${tracker.fps.toFixed(0)} fps · ${tracker.delegate}`;
+  $('roTrack').textContent = `${tracker.fps.toFixed(0)} fps · ${tracker.delegate}`;
+  $('roRender').textContent = `${stage.fps.toFixed(0)} fps · ${Math.round(stage.scale * 100)}%`;
 }
 
 function frame(now) {
   requestAnimationFrame(frame);
-  const dt = Math.min((now - last) / 1000, 0.05);
+  const dtMs = now - last;
+  const dt = Math.min(dtMs / 1000, 0.05);
   last = now;
+  stage.adapt(dtMs);
+  arena.update(now / 1000);
 
-  let hands = [];
-  if (tracker) {
-    const fresh = tracker.update(now);
-    hands = tracker.hands;
+  if (mode === 'game') {
+    tracker.update(now);
+    game.update(dt, tracker.slots);
     tracker.slots.forEach((slot, i) => {
-      avatars[i].group.visible = slot.active;
-      if (slot.active) avatars[i].update(slot.joints, slot.side, settings.joints);
+      const show = slot.active && !game.hideHand(i);
+      avatars[i].group.visible = show;
+      if (show) avatars[i].update(slot.joints, slot.side, settings.joints);
     });
-    game?.update(dt, now, hands, fresh);
-    stage.setRoomDepth(tracker.typicalDepth);
-    if (now - lastReadout > 200) {
+    drawPip();
+    if (now - lastReadout > 300) {
       lastReadout = now;
       updateReadouts();
     }
-    drawPip();
   } else {
-    demoAvatar.group.visible = true;
-    demoAvatar.update(demo.pose(now / 1000), 'right', false);
+    if (view.auto) view.yaw += dt * 0.35;
+    holder.rotation.set(view.pitch, view.yaw, 0, 'YXZ');
+    showcase.update(dt);
+    props.update(dt, null);
+    game.updateCasings(dt);
+    $('armoryAmmo').textContent = String(showcase.loaded);
   }
 
   fx.update(dt);
-  updateHint(now, hands);
+  updateHint(now);
   stage.render();
 }
+
+// ?debug exposes the game objects in the console.
+if (new URLSearchParams(location.search).has('debug')) {
+  window.hexDebug = { game, stage, showcase, props, enemies, get tracker() { return tracker; } };
+}
+
+setMode('title');
 requestAnimationFrame(frame);

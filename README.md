@@ -1,3 +1,3 @@
 # claude
 
-- [`hand-game/`](hand-game/): **Handspace**, a browser game where your webcam tracks your hands and drives a true-scale 3D hand. See [hand-game/README.md](hand-game/README.md) to run it.
+- [`hand-game/`](hand-game/): **Hexslinger**, a webcam wizard game. Your hands drive spectral 3D hands; use telekinesis to hurl things at hexlings, or make a finger gun to draw a working Colt Python. See [hand-game/README.md](hand-game/README.md) to run it.
