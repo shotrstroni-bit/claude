@@ -21,7 +21,9 @@ BB.BootScene = class extends Phaser.Scene {
       ['cloud2', BB.Art.cloud(2)],
       ['bush', BB.Art.bush()],
       ['glow', BB.Art.glow()],
-      ['a18_full', BB.Art.android18({ width: 560, height: 1260 })],
+      ['a18_title', BB.Art.android18({ width: 493, height: 1109 })],
+      ['a18_select', BB.Art.android18({ width: 307, height: 690 })],
+      ['a18_stage', BB.Art.android18({ width: 235, height: 529 })],
       ['a18_face', BB.Art.android18({ viewBox: '146 30 112 112', width: 240, height: 240 })]
     ];
 

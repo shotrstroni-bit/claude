@@ -9,7 +9,7 @@ BB.ROSTER = [
     color: 0x39c6ff,
     colorDark: 0x1a4fb8,
     css: '#39c6ff',
-    portrait: 'a18_full',
+    portrait: 'a18',
     icon: 'a18_face',
     bio: 'A cyborg with an infinite energy core and zero patience. She ends fights fast with a smirk, a spin kick, and a hip check nobody walks away from.',
     tags: ['STRIKER', 'INFINITE ENERGY', 'HIP CHECK'],

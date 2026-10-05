@@ -14,7 +14,7 @@ BB.StageScene = class extends Phaser.Scene {
     this.add.tileSprite(0, 330, W, 330, 'mesaNear').setOrigin(0);
     this.add.image(0, 640, 'ground').setOrigin(0);
     this.add.ellipse(320, 700, 200, 22, 0x000000, 0.3);
-    this.add.image(320, 706, f.portrait).setOrigin(0.5, 1).setScale(0.42);
+    this.add.image(320, 706, f.portrait + '_stage').setOrigin(0.5, 1);
 
     const banner = this.add.rectangle(W / 2, 84, W, 120, 0x0d0a1c, 0.75);
     this.add.text(W / 2, 66, 'STAGE 1  ·  ROCKY WASTELAND', {

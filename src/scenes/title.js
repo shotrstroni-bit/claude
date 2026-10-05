@@ -23,11 +23,11 @@ BB.TitleScene = class extends Phaser.Scene {
     const glow = this.add.image(960, 380, 'glow').setTint(0x39c6ff).setAlpha(0.45).setScale(2.6);
     this.tweens.add({ targets: glow, alpha: 0.65, scale: 2.8, duration: 2200, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
 
-    this.hero = this.add.image(1380, 40, 'a18_full').setOrigin(0.5, 0).setScale(0.88);
+    this.hero = this.add.image(1380, 40, 'a18_title').setOrigin(0.5, 0);
     this.tweens.add({
       targets: this.hero, x: 960, duration: 700, ease: 'Cubic.easeOut', delay: 250,
       onComplete: () => {
-        this.tweens.add({ targets: this.hero, scaleY: 0.888, y: 36, duration: 1600, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+        this.tweens.add({ targets: this.hero, scaleY: 1.008, y: 36, duration: 1600, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
       }
     });
 

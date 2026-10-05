@@ -24,13 +24,13 @@ BB.SelectScene = class extends Phaser.Scene {
     }).setOrigin(0.5).setRotation(-Math.PI / 2).setAlpha(0.13).setMask(slabMask);
 
     this.shadow = this.add.ellipse(300, 706, 260, 26, 0x000000, 0.35);
-    this.portrait = this.add.image(300, 712, 'a18_full').setOrigin(0.5, 1).setScale(690 / 1260);
+    this.portrait = this.add.image(300, 712, 'a18_select').setOrigin(0.5, 1);
     this.mystery = this.add.text(290, 380, '?', {
       fontFamily: BB.FONT_DISPLAY, fontSize: '360px', color: '#ffffff', stroke: '#0d0a1c', strokeThickness: 16,
       padding: { x: 40, y: 20 }
     }).setOrigin(0.5).setVisible(false);
     this.breathe = this.tweens.add({
-      targets: this.portrait, scaleY: (690 / 1260) * 1.008, duration: 1500, yoyo: true, repeat: -1, ease: 'Sine.easeInOut'
+      targets: this.portrait, scaleY: 1.008, duration: 1500, yoyo: true, repeat: -1, ease: 'Sine.easeInOut'
     });
 
     this.buildPanel();
@@ -195,7 +195,7 @@ BB.SelectScene = class extends Phaser.Scene {
     } else {
       this.mystery.setVisible(false);
       this.shadow.setVisible(true);
-      this.portrait.setVisible(true).setTexture(f.portrait).clearTint().setAlpha(0).setX(240);
+      this.portrait.setVisible(true).setTexture(f.portrait + '_select').clearTint().setAlpha(0).setX(240);
       this.slideTween = this.tweens.add({ targets: this.portrait, x: 300, alpha: 1, duration: 280, ease: 'Cubic.easeOut' });
     }
   }
