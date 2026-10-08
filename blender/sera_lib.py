@@ -872,14 +872,20 @@ class Rig:
         pb.matrix = Matrix.Translation(pivot) @ r @ Matrix.Translation(-pivot) @ m
         self.update()
 
-    def level_palm(self, side_letter, down=(0, 0, -1)):
-        """Twist a hand around its own length so the palm faces `down`."""
+    def palm_normal(self, side_letter):
+        """World direction the palm of this hand currently faces."""
         hand = f"hand.{side_letter}"
         side = 1 if side_letter == "L" else -1
         d = (self.tail(hand) - self.head(hand)).normalized()
         across = self.head(f"finger5_1.{side_letter}") - self.head(f"finger2_1.{side_letter}")
         across = (across - d * across.dot(d)).normalized()
-        palm = -side * d.cross(across)                  # current palm direction
+        return -side * d.cross(across)
+
+    def level_palm(self, side_letter, down=(0, 0, -1)):
+        """Twist a hand around its own length so the palm faces `down`."""
+        hand = f"hand.{side_letter}"
+        d = (self.tail(hand) - self.head(hand)).normalized()
+        palm = self.palm_normal(side_letter)            # current palm direction
         want = Vector(down) - d * Vector(down).dot(d)
         if want.length < 1e-6:
             return
@@ -928,6 +934,140 @@ class Rig:
                     q = Matrix.Rotation(math.radians(deg_thumb if f == 1 else deg_fingers), 4, "X").to_quaternion()
                     pb.rotation_quaternion = pb.rotation_quaternion @ q
         self.update()
+
+    # ------------------------------------------------ posing toolkit (see sera_poses.py)
+    # Hand shapes: curl in degrees per joint (knuckle, middle, tip) for index..pinky - more
+    # curl toward the pinky, like a real resting hand - then the thumb, then finger fan-out.
+    HANDS = {
+        "relaxed": ([(10, 18, 10), (15, 24, 13), (20, 28, 15), (25, 32, 17)], (8, 14, 10), 4),
+        "soft": ([(4, 9, 6), (7, 12, 7), (10, 15, 8), (13, 18, 9)], (3, 8, 6), 6),
+        "open": ([(1, 3, 2), (2, 4, 2), (3, 5, 3), (4, 6, 3)], (0, 3, 2), 9),
+        "fist": ([(80, 95, 60), (85, 95, 60), (88, 95, 60), (90, 95, 60)], (25, 35, 30), 0),
+    }
+
+    def bend(self, bones, axis, deg, weights=None):
+        """Split one rotation along a chain (spine, neck...) so it curves instead of kinking."""
+        weights = weights or [1 / len(bones)] * len(bones)
+        for b, w in zip(bones, weights):
+            self.rotate(b, axis, deg * w)
+
+    def _curl(self, s, finger, degs, palm):
+        """Bend one finger's three joints toward the palm around a single hinge axis
+        (taken once at the knuckle, so deep curls like a fist don't flip direction)."""
+        base = f"finger{finger}_1.{s}"
+        axis = (self.tail(base) - self.head(base)).normalized().cross(palm)
+        if axis.length < 1e-6:
+            return
+        axis.normalize()
+        for k, deg in zip((1, 2, 3), degs):
+            self.rotate_axis(f"finger{finger}_{k}.{s}", axis, math.radians(deg))
+
+    def hand_shape(self, s, shape="relaxed"):
+        """Curl one hand's fingers toward its palm (works the same on both hands)."""
+        fingers, thumb, fan = self.HANDS[shape]
+        palm = self.palm_normal(s)
+        index_to_pinky = self.head(f"finger5_1.{s}") - self.head(f"finger2_1.{s}")
+        for f, curl, spread in zip(range(2, 6), fingers, (-fan, -fan / 3, fan / 3, fan)):
+            base = f"finger{f}_1.{s}"
+            d = (self.tail(base) - self.head(base)).normalized()
+            if abs(spread) > 0.01:                       # fan the fingers apart a little
+                sign = 1 if palm.cross(d).dot(index_to_pinky) > 0 else -1
+                self.rotate_axis(base, palm, math.radians(spread) * sign)
+            self._curl(s, f, curl, palm)
+        self._curl(s, 1, thumb, palm)
+
+    def drop_shoulder(self, s, deg):
+        """Lower (+) or shrug (-) the collarbone - arms at the sides need relaxed shoulders."""
+        self.rotate(f"shoulder.{s}", "Y", (1 if s == "L" else -1) * deg)
+
+    def turn_palm(self, s, want, forearm_share=0.65):
+        """Face the palm toward `want`, twisting mostly the forearm (as a real arm does)
+        and the rest at the wrist, so the wrist skin doesn't wring."""
+        hand, fore = f"hand.{s}", f"forearm.{s}"
+        d = (self.tail(hand) - self.head(hand)).normalized()
+        w = Vector(want) - d * Vector(want).dot(d)
+        if w.length < 1e-6:
+            return
+        w.normalize()
+        p = self.palm_normal(s)
+        angle = p.angle(w)
+        if d.dot(p.cross(w)) < 0:
+            angle = -angle
+        fd = (self.tail(fore) - self.head(fore)).normalized()
+        self.rotate_axis(fore, fd, angle * forearm_share)
+        self.level_palm(s, want)
+
+    def arm_hang(self, s, out=12, forward=4, elbow=14, palm=None, hand="relaxed", drop=7):
+        """Let an arm hang naturally: shoulder dropped, swung `out` from the body and
+        `forward`, elbow soft, palm toward the thigh (or `palm`), hand relaxed."""
+        side = 1 if s == "L" else -1
+        self.drop_shoulder(s, drop)
+        o, f = math.radians(out), math.radians(forward)
+        upper = Vector((side * math.sin(o), -math.sin(f), -math.cos(o) * math.cos(f))).normalized()
+        self.aim(f"upper_arm.{s}", self.head(f"upper_arm.{s}") + upper)
+        ahead = Vector((-side * 0.25, -1, 0))             # forearm swings forward and a bit in
+        ahead = (ahead - upper * ahead.dot(upper)).normalized()
+        e = math.radians(elbow)
+        fore = upper * math.cos(e) + ahead * math.sin(e)
+        self.aim(f"forearm.{s}", self.head(f"forearm.{s}") + fore)
+        self.aim(f"hand.{s}", self.head(f"hand.{s}") + fore + ahead * 0.12)
+        self.turn_palm(s, palm or Vector((-side, 0.35, 0)))
+        self.hand_shape(s, hand)
+
+    def arm_reach(self, s, wrist, elbow_dir, hand_dir, palm, hand="soft", drop=4):
+        """Put the wrist at a world point (two-bone IK), elbow pointing along `elbow_dir`,
+        hand pointing along `hand_dir` with the palm toward `palm`. `drop` lowers the
+        shoulder first (negative raises it, for arms up high)."""
+        self.drop_shoulder(s, drop)
+        self.ik(f"upper_arm.{s}", f"forearm.{s}", wrist, self.head(f"upper_arm.{s}") + Vector(elbow_dir))
+        self.aim(f"hand.{s}", self.head(f"hand.{s}") + Vector(hand_dir))
+        self.turn_palm(s, palm)
+        self.hand_shape(s, hand)
+
+    def _rest(self, bone):
+        b = self.rig.data.bones[bone]
+        return self.rig.matrix_world @ b.head_local, self.rig.matrix_world @ b.tail_local
+
+    def _foot(self, s, x, y, turn, heel):
+        """Ankle spot, foot direction and foot pitch for a foot standing at (x, y)."""
+        side = 1 if s == "L" else -1
+        a0, b0 = self._rest(f"foot.{s}")
+        length = (b0 - a0).length
+        pitch = math.asin(max(-1.0, min(1.0, (a0.z - b0.z) / length)))    # ankle above the ball
+        t = math.radians(turn)
+        ahead = Vector((side * math.sin(t), -math.cos(t), 0))
+        p = pitch + math.radians(heel)
+        ankle = Vector((x, y, 0)) - ahead * length * (math.cos(p) - math.cos(pitch))
+        ankle.z = b0.z + length * math.sin(p)                     # the ball stays on the floor
+        return ankle, ahead, p
+
+    def plant(self, s, x, y, turn=8, heel=0, knee_out=0.15):
+        """IK a leg so the foot stands on the floor at (x, y): toes turned out by `turn`
+        degrees, heel lifted by `heel` degrees (0 = flat, 20+ = on the ball of the foot)."""
+        side = 1 if s == "L" else -1
+        ankle, ahead, p = self._foot(s, x, y, turn, heel)
+        self.ik(f"thigh.{s}", f"shin.{s}", ankle,
+                self.head(f"shin.{s}") + ahead + Vector((side * knee_out, 0, 0)))
+        a = self.head(f"foot.{s}")
+        self.aim(f"foot.{s}", a + ahead * math.cos(p) - Vector((0, 0, math.sin(p))))
+        tip = self.head(f"toe.{s}")
+        self.aim(f"toe.{s}", tip + ahead)
+
+    def reach_floor(self, s, x, y, turn=8, heel=0, straight=0.995, apply=True):
+        """Raise/lower the hips so this leg is `straight` (fraction of full length) when its
+        foot stands at (x, y) - the standing leg of a pose. Returns the height change."""
+        ankle = self._foot(s, x, y, turn, heel)[0]
+        hip = self.head(f"thigh.{s}")
+        reach = straight * (self.pb(f"thigh.{s}").length + self.pb(f"shin.{s}").length)
+        flat = math.hypot(hip.x - ankle.x, hip.y - ankle.y)
+        dz = ankle.z + math.sqrt(max(reach * reach - flat * flat, 0.01)) - hip.z
+        if apply:
+            self.shift("hips", (0, 0, dz))
+        return dz
+
+    def ground(self, body_z=0.0):
+        """Move the whole pose up/down so the lowest skin point touches the floor."""
+        self.shift("hips", (0, 0, body_z - self.surface()[:, 2].min()))
 
     def attach(self, obj, bone):
         """Parent an object to a bone without moving it."""
@@ -1060,19 +1200,22 @@ def add_mosaic_censor(segment_fn, occluder, radius=0.035, blocks=45):
     return censor_update
 
 
+def action_fcurves(action):
+    """All F-curves of an action, for legacy and Blender 4.4+ layered actions alike."""
+    curves = list(action.fcurves) if hasattr(action, "fcurves") else []
+    if not curves and hasattr(action, "layers"):
+        for layer in action.layers:
+            for strip in layer.strips:
+                for bag in strip.channelbags:
+                    curves += list(bag.fcurves)
+    return curves
+
+
 def loop_action(rig):
     """Make the rig's animation repeat forever (Cycles F-curve modifier)."""
     ad = rig.animation_data
     if not (ad and ad.action):
         return
-    curves = []
-    if hasattr(ad.action, "fcurves"):
-        curves = list(ad.action.fcurves)
-    if not curves and hasattr(ad.action, "layers"):         # Blender 4.4+ layered actions
-        for layer in ad.action.layers:
-            for strip in layer.strips:
-                for bag in strip.channelbags:
-                    curves += list(bag.fcurves)
-    for fc in curves:
+    for fc in action_fcurves(ad.action):
         if not any(m.type == "CYCLES" for m in fc.modifiers):
             fc.modifiers.new("CYCLES")
